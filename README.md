@@ -49,3 +49,7 @@ Included here:
 Use `goldeneye_ap_randomizer.lua` as the single Lua script in BizHawk.
 
 Disclaimer: As I am a budding young bushy eyed developer, AI was partially used to create this APWorld. I despise AI, but in the process of learning how to make apworlds, I've mostly used it as a guardrail professor to slap me with a ruler anytime I do anything wrong and explain to me why I'm dumb and should give up. The ultimate goal for me is to rewrite the code when it's working completely from scratch to make sure no AI was used in the full release of this apworld. I don't condone using AI to make apworlds, mostly because of it's effects on the world, but also because it's really stupid and most of the time can't do anything right unless you already know what you're doing anyway and can do it without.
+
+Thank you so much for helping me with creating this apworld. My dream for a long time has been to make these for games I love and it's very exciting to me that that is becoming a reality!
+
+Happy hunting, 007.
