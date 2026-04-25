@@ -49,7 +49,20 @@ def build_mission_unlock_block(ctx, starting_mission):
 
 def get_active_objective_checks(ctx, mission, difficulty_code):
     if ctx.slot_data["options"]["objective_mode"] == 2: # player chose shared objectives index [2]
-        return mission["shared_objective_checks"]
+        
+        allowed_offsets = set() # This set is for objectives allowed for this difficulty
+
+        # We're borrowing the list of per difficulty objectives to check if this objective is valid
+        for objective in mission["objective_checks_per_difficulty"][difficulty_code]:
+            allowed_offsets.add(objective["flag_offset"]) # Only add the flag_offsets of valid objectives.
+        
+        shared_objectives = [] # Track objectives that are allowed this difficulty
+
+        for objective in mission["shared_objective_checks"]: # Loop through chosen difficulty's objective list
+            if objective["flag_offset"] in allowed_offsets:  # If the objective's flag offset is in the allowed offsets
+                shared_objectives.append(objective)          # add it to be allowed to clear only then
+        return shared_objectives
+        
     return mission["objective_checks_per_difficulty"][difficulty_code] # player chose per difficulty objectives
 
 def get_active_clear_location_id(ctx, mission, difficulty_code):
@@ -192,7 +205,11 @@ class GoldeneyeClient(BizHawkClient):
 
                         # This concludes the "is the new objective_status we just got different from the old objective_status" block
 
-                        if old_objective_status != 1 and new_objective_status == 1:                           # if the stored old objective flag offset is different now
+                        # Need to block objectives not in the difficulty you're playing on
+                        # if objective not in difficulty:
+                        #  continue
+
+                        if old_objective_status != 1 and new_objective_status == 1:     # if the stored old objective flag offset is different now
                             location_id = objective["location_id"]                      # Find that objective's location id
                             if location_id not in self.local_checked_locations:         # local_checked_locations was initiated in validate_rom
                                 if objective["requires_success"] is False:              # If the objective is marked false in client_data.py
