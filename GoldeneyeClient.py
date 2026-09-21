@@ -88,6 +88,8 @@
 
 import worlds._bizhawk as bizhawk
 import logging
+import json
+from Utils import persistent_load, persistent_store
 from . import client_data
 from worlds._bizhawk.client import BizHawkClient
 
@@ -105,6 +107,8 @@ SCREEN_ID_ADDRESS = 0x2A8C0
 MISSION_ID_ADDRESS = 0x2A8F8
 DIFFICULTY_ADDRESS = 0x2A8FC
 UNLOCK_BASE_ADDRESS = 0x7F000
+GUN_PICKUP_OPTION_ADDRESS = 0x7F208
+NATIVE_ITEM_PICKUP_OPTION_ADDRESS = 0x7F209
 OBJECTIVE_FLAG_BASE_ADDRESS = 0x75D58
 OBJECTIVE_FLAG_BLOCK_SIZE = 40
 
@@ -112,9 +116,6 @@ OBJECTIVE_FLAG_BLOCK_SIZE = 40
 
 SCREEN_GAMEPLAY = 0x0B # Using the in gameplay screen to trigger weapon loadout reset after leaving it
 STARTUP_READY_MAILBOX_ADDRESS = 0x7F020
-FREESTANDING_PROXY_MAILBOX_ADDRESS = 0x7F1C0
-FREESTANDING_PROXY_MAILBOX_EMPTY = 0
-FREESTANDING_PROXY_MAILBOX_QUEUED = 1
 
 #   Offsets (OFF)
 
@@ -126,20 +127,34 @@ OFF_EQUIP_CUR = 0x11F0
 
 INV_ITEM_NONE = -1
 INV_ITEM_WEAPON = 1
+INV_ITEM_AP_KEY = 0x10001
+INV_ITEM_AP_SPENT = 0x10000  # Retain semantic receipt until the stage pool is reset; hidden from watch.
 INV_ITEM_SIZE = 0x14
 ITEM_SLAPPERS = 1
 
-# Freestanding Weapons Constants
+#   Key Item Receive Constants #
 
-OBJ_OFF_TYPE = 0x03
-WEP_OFF_WEAPONNUM = 0x80
+OBJECT_TAG_LIST_ADDRESS = 0x75D80
+KEY_ITEM_AP_ID_BASE = 17330000
+INV_ITEM_PROP = 2
+OFF_RIGHT_HAND_WEAPON = 0x870
+OFF_RIGHT_HAND_MAGAZINE = 0x89C
 
-PROPDEF_COLLECTABLE = 0x08
+    # Key receive owns 0x7F200 through 0x7F207.
+    # State word: bits 0-7 are special grants; bits 8-15 identify the owning mission 
+    # (so that you don't get like Goldeneye Key on Runway or something).
+
+KEY_ITEM_FLAGS_MAILBOX_ADDRESS = 0x7F200
+KEY_ITEM_STATE_MAILBOX_ADDRESS = 0x7F204
+KEY_ITEM_STATE_MISSION_SHIFT = 8
+KEY_ITEM_COLLECTION_FAILURE_SHIFT = 16
+KEY_ITEM_SPECIAL_FLAGS_MASK = 0xFF
+OFF_COPIED_GOLDENEYE = 0x1060
 
 FREESTANDING_RESULT_MAILBOX_ADDRESS = 0x7F1C0 # result mailbox from Lua to Python
 FREESTANDING_TARGET_COUNT_ADDRESS = 0x7F1C4 # target count from Python to Lua
-FREESTANDING_TARGET_LIST_ADDRESS = 0x7F1C8 # start of target weapon id list
-FREESTANDING_TARGET_ENTRY_SIZE = 4
+FREESTANDING_TARGET_LIST_ADDRESS = 0x7F1C8 # packed 28-bit kind/model/pad descriptors
+FREESTANDING_TARGET_LIST_SIZE = KEY_ITEM_FLAGS_MAILBOX_ADDRESS - FREESTANDING_TARGET_LIST_ADDRESS
 
 #   Mission and Objective Data from client_data.py
 
@@ -239,24 +254,258 @@ def get_active_clear_location_id(ctx, mission, difficulty_code):
         return mission["shared_clear_location_id"]
     return mission["clear_location_ids"][difficulty_code] # player chose per difficulty clear
 
-# Key Items and Freestanding Items Defs
+#   Key Item Receive Functions #
 
-def get_active_freestanding_weapon_checks(ctx, mission, difficulty_code):
-    if ctx.slot_data["options"]['mission_clear_mode'] == 2: # player chose per map checks index [2]
-        return mission.get("shared_freestanding_weapon_checks", [])
-    return mission.get("per_difficulty_freestanding_weapon_checks", {}).get(difficulty_code, [])
+def build_key_item_receive_state(items_received, mission):
+#~~~~~~ Stage 1: Find the AP items the player owns ~~~~~~#
+    owned_item_ids = set()
+    for item in items_received:
+        owned_item_ids.add(item.item)
 
-def build_freestanding_target_writes(active_freestanding_weapon_checks): # We control freestanding items by utilizing when their model is visible to the player kinda by draw distance load ins
-    count = len(active_freestanding_weapon_checks) # Counts how many active freestanding weapons this mission has
-    writes = []  
+#~~~~~~ Stage 2: Combine permissions for this mission's owned keys ~~~~~~#
+    key_flags = 0
+    special_key_flags = 0
+    collection_failure_flags = 0
+    for key in mission["key_items"]:
+        if key["ap_item_id"] not in owned_item_ids:
+            continue
+        # These fields describe different key types in the generated schema.
+        if "key_flags" in key:
+            key_flags |= key["key_flags"]
+        if "special_key_flags" in key:
+            special_key_flags |= key["special_key_flags"]
+        if "collection_failure_flags" in key:
+            collection_failure_flags |= key["collection_failure_flags"]
 
-    writes.append((FREESTANDING_TARGET_COUNT_ADDRESS, u32_bytes(count), "RDRAM")) # Writes the count to 0x7F1C4
+#~~~~~~ Stage 3: Pack the existing mission state and return both words ~~~~~~#
+    state = mission["mission_id"] << KEY_ITEM_STATE_MISSION_SHIFT
+    state |= special_key_flags
+    # The upper half suppresses only collection failures covered by owned keys.
+    state |= collection_failure_flags << KEY_ITEM_COLLECTION_FAILURE_SHIFT
+    return key_flags, state
 
-    for index, check in enumerate(active_freestanding_weapon_checks): # enumerate gives us indecies 0,1,2 and weapon id will write to the corresponding slot
-        target_address = FREESTANDING_TARGET_LIST_ADDRESS + index * FREESTANDING_TARGET_ENTRY_SIZE
-        writes.append((target_address, u32_bytes(check["weapon_id"]), "RDRAM"))
 
-    return writes
+async def write_key_item_receive_state(ctx, items_received, mission, screen_bytes, mission_bytes, bonddata_bytes):
+#~~~~~~ Stage 1: Reconcile the watch and read the resulting inventory ~~~~~~#
+    guards = [
+        (SCREEN_ID_ADDRESS, screen_bytes, "RDRAM"),
+        (MISSION_ID_ADDRESS, mission_bytes, "RDRAM"),
+        (BONDDATA_pointer_ADDRESS, bonddata_bytes, "RDRAM"),
+    ]
+    if not await write_key_watch_entries(ctx, items_received, mission, bonddata_bytes, guards):
+        return False
+    bonddata_pointer = to_rdram_ptr(int.from_bytes(bonddata_bytes, "big"))
+    # Re-read after publication: the previous snapshot predates the watch change.
+    snapshot = await read_inventory_snapshot(ctx, bonddata_pointer)
+    guards.extend(snapshot["guards"])
+
+#~~~~~~ Stage 2: Prepare permissions for keys actually shown in the watch ~~~~~~#
+    presented_item_ids = set()
+    for entry in snapshot["entries"]:
+        if entry["type"] == INV_ITEM_AP_KEY:
+            identity = (entry["weapon_id"] >> 16) & 0xFF
+            presented_item_ids.add(KEY_ITEM_AP_ID_BASE + identity)
+    available_items = []
+    for item in items_received:
+        if item.item in presented_item_ids:
+            available_items.append(item)
+    key_flags, state = build_key_item_receive_state(available_items, mission)
+
+    # Copying the GoldenEye Key spends its special permission.
+    if state & KEY_ITEM_SPECIAL_FLAGS_MASK:
+        copied_address = bonddata_pointer + OFF_COPIED_GOLDENEYE
+        copied_bytes = (await bizhawk.read(ctx.bizhawk_ctx, [(copied_address, 4, "RDRAM")]))[0]
+        guards.append((copied_address, copied_bytes, "RDRAM"))
+        if int.from_bytes(copied_bytes, "big") != 0:
+            state &= ~KEY_ITEM_SPECIAL_FLAGS_MASK
+
+#~~~~~~ Stage 3: Commit both words, including zeroes that clear old grants ~~~~~~#
+    writes = [
+        (KEY_ITEM_FLAGS_MAILBOX_ADDRESS, u32_bytes(key_flags), "RDRAM"),
+        (KEY_ITEM_STATE_MAILBOX_ADDRESS, u32_bytes(state), "RDRAM"),
+    ]
+    return await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, guards)
+
+
+async def read_native_key_inventory(ctx, entries, guards):
+    """Read native item identities once, keeping their memory in the commit guards."""
+    weapons, devices, key_flags, objects, tags = set(), set(), set(), set(), set()
+    for entry in entries:
+        if entry["type"] == INV_ITEM_WEAPON:
+            weapons.add(entry["weapon_id"])
+        if entry["type"] != INV_ITEM_PROP:
+            continue
+        prop_pointer = to_rdram_ptr(entry["weapon_id"])
+        if not 0 < prop_pointer <= 0x800000 - 8:
+            continue
+        prop_bytes = (await bizhawk.read(ctx.bizhawk_ctx, [(prop_pointer, 8, "RDRAM")]))[0]
+        object_pointer = to_rdram_ptr(int.from_bytes(prop_bytes[4:8], "big"))
+        # Native devices use weapon props (4); ordinary keys use object props (1).
+        if prop_bytes[0] not in (1, 4) or not 0 < object_pointer <= 0x800000 - 0x84:
+            continue
+        object_bytes = (await bizhawk.read(ctx.bizhawk_ctx, [(object_pointer, 0x84, "RDRAM")]))[0]
+        guards.extend([(prop_pointer, prop_bytes, "RDRAM"), (object_pointer, object_bytes, "RDRAM")])
+        objects.add(object_pointer)
+        if object_bytes[3] == 8:  # Native weapon object: its item ID is one byte.
+            devices.add(object_bytes[0x80])
+        if object_bytes[3] == 4:  # Native key object: its permission mask is a word.
+            key_flags.add(int.from_bytes(object_bytes[0x80:0x84], "big"))
+
+    # Match tag identities only when inventory contains native objects.
+    if objects:
+        tag_bytes = (await bizhawk.read(ctx.bizhawk_ctx, [(OBJECT_TAG_LIST_ADDRESS, 4, "RDRAM")]))[0]
+        guards.append((OBJECT_TAG_LIST_ADDRESS, tag_bytes, "RDRAM"))
+        tag_pointer = to_rdram_ptr(int.from_bytes(tag_bytes, "big"))
+        seen_pointers = set()
+        while 0 < tag_pointer <= 0x800000 - 16 and tag_pointer not in seen_pointers:
+            seen_pointers.add(tag_pointer)
+            tag_bytes = (await bizhawk.read(ctx.bizhawk_ctx, [(tag_pointer, 16, "RDRAM")]))[0]
+            guards.append((tag_pointer, tag_bytes, "RDRAM"))
+            object_pointer = to_rdram_ptr(int.from_bytes(tag_bytes[12:16], "big"))
+            if object_pointer in objects:
+                tags.add(int.from_bytes(tag_bytes[4:6], "big"))
+            tag_pointer = to_rdram_ptr(int.from_bytes(tag_bytes[8:12], "big"))
+    return weapons, devices, key_flags, tags
+
+
+async def write_key_watch_entries(ctx, items_received, mission, bonddata_bytes, guards):
+#~~~~~~ Stage 1: Read a bounded inventory with complete circular links ~~~~~~#
+    bond = to_rdram_ptr(int.from_bytes(bonddata_bytes, "big"))
+    if not 0 < bond <= 0x800000 - OFF_INV_MAX - 4:
+        return False
+    snapshot = await read_inventory_snapshot(ctx, bond)
+    if "guards" not in snapshot:
+        return False
+    # Only mutate a complete circular list whose links belong to this pool.
+    entries = snapshot["entries"]
+    for index, entry in enumerate(entries):
+        offset = entry["pointer"] - snapshot["pool_pointer"]
+        if (offset % INV_ITEM_SIZE
+                or entry["next_pointer"] != entries[(index + 1) % len(entries)]["pointer"]
+                or entry["prev_pointer"] != entries[(index - 1) % len(entries)]["pointer"]):
+            return False
+    if snapshot["head_pointer"] and not entries:
+        return False
+#~~~~~~ Stage 2: Find owned keys and their existing watch entries ~~~~~~#
+    owned_item_ids = set()
+    for item in items_received:
+        owned_item_ids.add(item.item)
+    markers = {}
+    for entry in entries:
+        if entry["type"] in (INV_ITEM_AP_KEY, INV_ITEM_AP_SPENT):
+            identity = (entry["weapon_id"] >> 16) & 0xFF
+            markers[identity] = entry
+
+    guards = guards + snapshot["guards"]
+    native_weapons, native_devices, native_key_flags, native_tags = await read_native_key_inventory(
+        ctx, entries, guards)
+
+    mark_spent = False
+    for key in mission["key_items"]:
+        if key["ap_item_id"] not in owned_item_ids:
+            continue
+        identity = key["ap_item_id"] - KEY_ITEM_AP_ID_BASE
+        marker = markers.get(identity)
+        ammo_writes = []
+        if "ammo_offset" in key:
+            if marker and marker["type"] == INV_ITEM_AP_SPENT:
+                continue
+            # Reload moves reserve into the right-hand magazine; count both.
+            fields = [(bond + key["ammo_offset"], 4, "RDRAM"),
+                      (bond + OFF_RIGHT_HAND_WEAPON, 4, "RDRAM"),
+                      (bond + OFF_RIGHT_HAND_MAGAZINE, 4, "RDRAM")]
+            values = await bizhawk.read(ctx.bizhawk_ctx, fields)
+            for (address, size, domain), raw in zip(fields, values):
+                guards.append((address, raw, domain))
+            total = int.from_bytes(values[0], "big")
+            if int.from_bytes(values[1], "big") == key["native_item_id"]:
+                total += int.from_bytes(values[2], "big")
+            if marker and total == 0:
+                mark_spent = True
+                break
+            if not marker and total == 0:
+                ammo_writes = [(bond + key["ammo_offset"], u32_bytes(key["ammo_grant"]), "RDRAM")]
+        # Native entries already supply their own watch presentation.
+        native_key = False
+        if "object_tag" in key:
+            native_key = key["object_tag"] in native_tags
+        if "key_flags" in key:
+            native_key |= key["key_flags"] in native_key_flags
+        if "use_behavior" in key:
+            native_key |= key["native_item_id"] in native_devices
+            if key["use_behavior"] == "reusable":
+                native_key |= key["native_item_id"] in native_weapons
+        if native_key and not marker:
+            continue
+        if marker and not native_key:
+            continue
+        break
+    else:
+        return True
+
+#~~~~~~ Stage 3: Prepare the selected inventory change ~~~~~~#
+    if mark_spent:
+        writes = [(marker["pointer"], u32_bytes(INV_ITEM_AP_SPENT), "RDRAM")]
+    elif native_key:
+        writes = [
+            (marker["prev_pointer"] + 0x0C, pointer_bytes(marker["next_pointer"]), "RDRAM"),
+            (marker["next_pointer"] + 0x10, pointer_bytes(marker["prev_pointer"]), "RDRAM"),
+            (marker["pointer"], s32_bytes(INV_ITEM_NONE), "RDRAM"),
+        ]
+        if marker["pointer"] == snapshot["head_pointer"]:
+            writes.insert(0, (bond + OFF_INV_HEAD, pointer_bytes(marker["next_pointer"]), "RDRAM"))
+    else:
+        if not snapshot["free_slot_indices"]:
+            return False
+        slot = snapshot["pool_pointer"] + snapshot["free_slot_indices"][0] * INV_ITEM_SIZE
+        head = snapshot["head_pointer"]
+        tail = slot
+        next_pointer = slot
+        if head:
+            tail = entries[0]["prev_pointer"]
+            next_pointer = head
+        # No object tag is encoded as 255 in the existing native watch layout.
+        object_tag = 255
+        if "object_tag" in key:
+            object_tag = key["object_tag"]
+        identity_word = (object_tag << 24) | (identity << 16) | key["native_item_id"]
+        names_word = (key["watch_short"] << 16) | key["watch_long"]
+        node = b"".join([
+            u32_bytes(INV_ITEM_AP_KEY), u32_bytes(identity_word), u32_bytes(names_word),
+            pointer_bytes(next_pointer), pointer_bytes(tail),
+        ])
+        # Initialize the allocated slot before publishing links. Guard the entire
+        # snapshot so a pickup, weapon receipt or watch action cannot race it.
+        writes = [(slot, node, "RDRAM")] + ammo_writes
+        if head:
+            writes.extend([(tail + 0x0C, pointer_bytes(slot), "RDRAM"),
+                           (head + 0x10, pointer_bytes(slot), "RDRAM")])
+        else:
+            writes.append((bond + OFF_INV_HEAD, pointer_bytes(slot), "RDRAM"))
+
+#~~~~~~ Stage 4: Apply the prepared change through the guarded write boundary ~~~~~~#
+    return await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, guards)
+
+#   Freestanding Item Functions #
+
+def get_active_freestanding_pickup_checks(ctx, mission, difficulty_code, source_type="freestanding_pickup"):
+    item_shuffle = ctx.slot_data["options"]["item_shuffle"]
+    if item_shuffle == 2:
+        return mission.get(f"shared_{source_type}_checks", [])
+    if item_shuffle == 1:
+        return mission.get(f"per_difficulty_{source_type}_checks", {}).get(difficulty_code, [])
+    return []
+
+def build_freestanding_target_writes(active_freestanding_pickup_checks):
+    count = len(active_freestanding_pickup_checks)
+    assert count * 28 <= FREESTANDING_TARGET_LIST_SIZE * 8
+    packed = 0
+    for index, check in enumerate(active_freestanding_pickup_checks):
+        packed |= check["descriptor"] << (index * 28)
+    return [
+        (FREESTANDING_TARGET_COUNT_ADDRESS, u32_bytes(count), "RDRAM"),
+        (FREESTANDING_TARGET_LIST_ADDRESS, packed.to_bytes(FREESTANDING_TARGET_LIST_SIZE, "little"), "RDRAM"),
+    ]
 
 # Weapon Loadout Defs
 
@@ -304,7 +553,7 @@ def build_mission_start_gadget_ids(mission, counts):
     owned_gadget_ids = []                   # ids of gadgets the player has
 
     for ap_id, gadget_def in client_data.LOADOUT_GADGETS.items():   # Example: ap_id = 17330000 || gadget_def = {"item_name": "Covert Modem","item_id": 47,}
-        if ap_id in counts:                                         # Example: counts = {17330000: 1, 17330004: 1, 17330003: 1}
+        if ap_id in counts and mission["name"] in gadget_def["missions"]: # Example: counts = {17330000: 1, 17330004: 1, 17330003: 1}
             owned_gadget_ids.append(gadget_def["item_id"])          # Example: 17330000 is in both so add that gadget def's id ("item_id": 47,) into "owned_gadget_ids"
 
     gadget_ids = []
@@ -324,9 +573,8 @@ def build_startup_inventory_entries(loadout, gadget_ids, max_items):
     # That is FIRST weapons, LAST gadgets. And if it exists already in the base loadout DON'T TOUCH IT.
     # Gadgets do NOT like to be written into inventory, but guns seem to be okay.
 
-    # We also have a maximum number of items bond can hold in memory so we handle overflow here.
-    # The rule I've set is, if we exceed max_items, start deleting the earliest weapon_ids until it fits.
-    # This would just mean losing hunting knife first rather than clipping the higher number ids.
+    # The ROM reserves a generated capacity through the native stage allocator.
+    # An incompatible allocation must never silently discard owned weapons.
 
     # Here's where this function happens after lua sends loadout ready flag:
     # 1. Read current inventory snaphot (read_inventory_snapshot)
@@ -385,9 +633,8 @@ def build_startup_inventory_entries(loadout, gadget_ids, max_items):
 
     total_entries = 1 + sum(len(group) for group in weapon_groups) + len(gadget_entries)        # Calculates the total of items you have to be loaded out plus slappers
 
-    while total_entries > max_items and weapon_groups:                                          # If there's not enough room for all the weapons in memory
-        weapon_groups.pop(0)                                                                    # remove the first group, aka the weakest guns in inventoy
-        total_entries = 1 + sum(len(group) for group in weapon_groups) + len(gadget_entries)    # recalculate total_entries for next loop, plus one to account for slappers
+    if total_entries > max_items:
+        raise ValueError("Native inventory allocation cannot hold the complete AP loadout")
 
     loadout_items = [slappers_entry]                                                            # This block puts the final list together in the correct order and with slappers included.
     for group in weapon_groups:
@@ -470,36 +717,6 @@ def resolve_progressive_weapon_item_id(progressive_count):
     return PROGRESSIVE_GUN_ITEM_IDS[progressive_count - 1]
 
 
-def build_live_inventory_remove_weapon_writes(snapshot, bonddata_pointer, weapon_id):
-    writes = []
-
-    for entry in snapshot["entries"]:                                # Find the inventory entry we want to remove
-        if entry["type"] == INV_ITEM_WEAPON and entry["weapon_id"] == weapon_id:
-            target_entry = entry
-            break
-    else:
-        return writes
-
-    target_pointer = target_entry["pointer"]
-    next_pointer = target_entry["next_pointer"]
-    prev_pointer = target_entry["prev_pointer"]
-
-    if next_pointer == target_pointer and prev_pointer == target_pointer: # If this was the only inventory entry, empty the list
-        writes.append((bonddata_pointer + OFF_INV_HEAD, pointer_bytes(0), "RDRAM"))
-    else:
-        writes.append((prev_pointer + 0x0C, pointer_bytes(next_pointer), "RDRAM")) # Previous entry now points around this one
-        writes.append((next_pointer + 0x10, pointer_bytes(prev_pointer), "RDRAM")) # Next entry now points back around this one
-        if snapshot["head_pointer"] == target_pointer:
-            writes.append((bonddata_pointer + OFF_INV_HEAD, pointer_bytes(next_pointer), "RDRAM"))
-
-    writes.append((target_pointer + 0x00, s32_bytes(INV_ITEM_NONE), "RDRAM"))       # Clear the removed slot
-    writes.append((target_pointer + 0x04, u32_bytes(0), "RDRAM"))
-    writes.append((target_pointer + 0x08, u32_bytes(0), "RDRAM"))
-    writes.append((target_pointer + 0x0C, pointer_bytes(0), "RDRAM"))
-    writes.append((target_pointer + 0x10, pointer_bytes(0), "RDRAM"))
-
-    return writes
-
 def build_live_inventory_add_weapon_writes(snapshot, bonddata_pointer, weapon_id):
     writes = []
 
@@ -519,12 +736,21 @@ def build_live_inventory_add_weapon_writes(snapshot, bonddata_pointer, weapon_id
         prev_pointer = new_slot_address
         writes.append((bonddata_pointer + OFF_INV_HEAD, pointer_bytes(new_slot_address), "RDRAM"))
     else:
-        head_pointer = snapshot["head_pointer"]                      # First current inventory entry
-        tail_pointer = snapshot["entries"][0]["prev_pointer"]        # Previous entry from head is the tail of the circle
-        next_pointer = head_pointer
-        prev_pointer = tail_pointer
-        writes.append((tail_pointer + 0x0C, pointer_bytes(new_slot_address), "RDRAM"))  # Tail now points forward to new slot
-        writes.append((head_pointer + 0x10, pointer_bytes(new_slot_address), "RDRAM"))  # Head now points back to new slot
+        # Native inventory sorts weapons and devices by ID, before prop/key entries.
+        # Keeping that order lets native watch selection activate a live-received device.
+        following = snapshot["entries"][0]
+        insert_before_head = False
+        for entry in snapshot["entries"]:
+            if entry["type"] not in (INV_ITEM_WEAPON, 3) or entry["weapon_id"] >= weapon_id:
+                following = entry
+                insert_before_head = entry["pointer"] == snapshot["head_pointer"]
+                break
+        next_pointer = following["pointer"]
+        prev_pointer = following["prev_pointer"]
+        writes.append((prev_pointer + 0x0C, pointer_bytes(new_slot_address), "RDRAM"))
+        writes.append((next_pointer + 0x10, pointer_bytes(new_slot_address), "RDRAM"))
+        if insert_before_head:
+            writes.append((bonddata_pointer + OFF_INV_HEAD, pointer_bytes(new_slot_address), "RDRAM"))
 
     writes.append((new_slot_address + 0x00, u32_bytes(INV_ITEM_WEAPON), "RDRAM"))
     writes.append((new_slot_address + 0x04, u32_bytes(weapon_id), "RDRAM"))
@@ -535,9 +761,8 @@ def build_live_inventory_add_weapon_writes(snapshot, bonddata_pointer, weapon_id
     return writes
 
 # # # # # # # # # # # #  
-# # ASYNC FUNCTIONS  # #
+# # ASYNC FUNCTIONS # #
 # # # # # # # # # # # # 
-
 
 async def build_live_weapon_receive_writes(ctx, bonddata_pointer, item_id):
     weapon_def = WEAPON_ITEM_DEFS[item_id]
@@ -561,13 +786,13 @@ async def build_live_weapon_receive_writes(ctx, bonddata_pointer, item_id):
 
 async def read_inventory_snapshot(ctx, bonddata_pointer):       # What do bond's inventory be right now
 
-# head_pointer_address = address
-# reads = raw bytes from BizHawk
-# head_pointer = decoded pointer
-# pool_bytes = raw inventory pool bytes
-# entries = list of parsed active inventory entries
-# free_slot_indices = list of empty slot numbers
-# snapshot = final return dictionary
+        # head_pointer_address = address
+        # reads = raw bytes from BizHawk
+        # head_pointer = decoded pointer
+        # pool_bytes = raw inventory pool bytes
+        # entries = list of parsed active inventory entries
+        # free_slot_indices = list of empty slot numbers
+        # snapshot = final return dictionary
 
 #~~~~~~ Stage 1: Read the inventory pointers and slot count ~~~~~~#
    
@@ -594,7 +819,9 @@ async def read_inventory_snapshot(ctx, bonddata_pointer):       # What do bond's
     entries = [] 
     free_slot_indices = []
     
-    if pool_pointer <= 0 or max_items <= 0:                     # if the data doesn't look like a bunch of garbage
+    # Stage transitions can leave inventory unavailable. Bound the native read first.
+    if not (0 < pool_pointer and 1 <= max_items <= 128
+            and pool_pointer + max_items * INV_ITEM_SIZE <= 0x800000):
         return {                                                # Return the snapshot with the inventory information
             "head_pointer": head_pointer,
             "pool_pointer": pool_pointer,
@@ -654,6 +881,10 @@ async def read_inventory_snapshot(ctx, bonddata_pointer):       # What do bond's
         "max_items": max_items,
         "entries": entries,
         "free_slot_indices": free_slot_indices,        
+        "guards": [(head_pointer_address, reads[0], "RDRAM"),
+                   (pool_pointer_address, reads[1], "RDRAM"),
+                   (max_items_address, reads[2], "RDRAM"),
+                   (pool_pointer, pool_bytes, "RDRAM")],
     }
 
     return snapshot
@@ -695,10 +926,10 @@ class GoldeneyeClient(BizHawkClient):
         self.local_checked_locations = set()    # keeping track of what's been checked
         self.pending_success_objectives = set() # keeping track of success-only objectives
         self.last_startup_ready_mission = None
-        self.freestanding_weapon_slots = {}     # keeping track of freestanding weapons in this level
         self.previous_freestanding_mission_id = None
 
         self.previous_items_received_count = None   # keep track of how many AP items we've already handled for live receives
+        self.previous_server_checked_locations = None
 
         return True
 
@@ -707,294 +938,455 @@ class GoldeneyeClient(BizHawkClient):
         # Handle the case that if game_watcher is None, continue and don't crash
         if ctx.server is None or ctx.server.socket.closed or ctx.slot_data is None:
             return
-        
-        # Sync checked locations from AP
-        # update self.local_checked_locations from ctx.locations_checked or ctx.checked_locations so reconnects donÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢t resend old checks
-        checked_locations = getattr(ctx, "locations_checked", None)
-        if checked_locations is None:
-            checked_locations = getattr(ctx, "checked_locations", None)
 
-        if checked_locations:
-            for location_id in checked_locations:
-                self.local_checked_locations.add(int(location_id))
+        try:
 
-        # Get the starting mission from slot_data and build the unlock block
-        starting_mission = get_starting_mission(ctx)
-        unlock_block = build_mission_unlock_block(ctx, starting_mission)
+            # Sync checked locations from AP
+            # update self.local_checked_locations from ctx.locations_checked or ctx.checked_locations so reconnects dont resend old checks
+            checked_locations = getattr(ctx, "locations_checked", None)
+            if checked_locations is None:
+                checked_locations = getattr(ctx, "checked_locations", None)
 
-        # bizhawk.write expects: (ctx.bizhawk_ctx, [(address, data, domain)])
-        # await pauses this function until the write completes
+            if checked_locations:
+                for location_id in checked_locations:
+                    self.local_checked_locations.add(int(location_id))
 
-        # Update unlocked levels in game
-        await bizhawk.write(ctx.bizhawk_ctx, [(UNLOCK_BASE_ADDRESS, unlock_block, "RDRAM"),]) 
+            server_checked_locations = sorted(int(location_id) for location_id in (checked_locations or []))
+            if server_checked_locations != self.previous_server_checked_locations:
+                logger.info("GoldenEye server checked locations=%s", server_checked_locations)
+                self.previous_server_checked_locations = server_checked_locations
 
-        # Read current Bizhawk Values
-        reads = await bizhawk.read(ctx.bizhawk_ctx, [       # The list of addresses we want info from
-            (SCREEN_ID_ADDRESS, 4, "RDRAM"),                
-            (MISSION_ID_ADDRESS, 4, "RDRAM"),
-            (DIFFICULTY_ADDRESS, 4, "RDRAM"),
-            (FAILED_ABORTED_ADDRESS, 4, "RDRAM"),
-            (BOND_KIA_ADDRESS, 4, "RDRAM"),
-        ])
+            # Get the starting mission from slot_data and build the unlock block
+            starting_mission = get_starting_mission(ctx)
+            unlock_block = build_mission_unlock_block(ctx, starting_mission)
 
-        # Set current game state variables
-        screen_id = int.from_bytes(reads[0], "big")
-        mission_id = int.from_bytes(reads[1], "big")
-        selected_difficulty = int.from_bytes(reads[2], "big")
-        
-        failed_or_aborted = int.from_bytes(reads[3], "big")
-        bond_kia = int.from_bytes(reads[4], "big")
-        
-        mission = MISSION_BY_ID.get(mission_id)
-        
-        if screen_id != SCREEN_GAMEPLAY:
-            self.last_startup_ready_mission = None
-        
-# # ~ # # ~ # # ~ # # ~ # # ~ # # ~ # # ~ # #
-# # The LOOP tm for each valid game frame # #
-# # ~ # # ~ # # ~ # # ~ # # ~ # # ~ # # ~ # #
-        
-        # We only want info after a mission and difficulty is selected
-        if mission is not None and selected_difficulty in (0, 1, 2): # check if it's a valid frame
-            difficulty_code = selected_difficulty + 1
+            # bizhawk.write expects: (ctx.bizhawk_ctx, [(address, data, domain)])
+            # await pauses this function until the write completes
 
-###############################
-# | Mission Startup Loadout | #
-###############################
+            # Update unlocked levels in game
+            await bizhawk.write(ctx.bizhawk_ctx, [(UNLOCK_BASE_ADDRESS, unlock_block, "RDRAM"),])
 
-                # base = vanilla mission startup set
-                # owned = player has from AP
-                # current = currently in memory
-                # desired = should be present after sync
-
-            startup_poll = await bizhawk.read(ctx.bizhawk_ctx, [       # Read the startup ready mailbox and set to variable startup_poll
-                (STARTUP_READY_MAILBOX_ADDRESS, 4, "RDRAM"),           
+            # Read current Bizhawk Values
+            reads = await bizhawk.read(ctx.bizhawk_ctx, [       # The list of addresses we want info from
+                (SCREEN_ID_ADDRESS, 4, "RDRAM"),                
+                (MISSION_ID_ADDRESS, 4, "RDRAM"),
+                (DIFFICULTY_ADDRESS, 4, "RDRAM"),
+                (FAILED_ABORTED_ADDRESS, 4, "RDRAM"),
+                (BOND_KIA_ADDRESS, 4, "RDRAM"),
+                (BONDDATA_pointer_ADDRESS, 4, "RDRAM"),
             ])
 
-            startup_ready = int.from_bytes(startup_poll[0], "big")  # goldeneye_ap.lua writes 1, python receives bytes, this converts it to 1
-
-            if startup_ready == 1 and self.last_startup_ready_mission != mission_id:
-                self.last_startup_ready_mission = mission_id
-                counts = count_received_items(ctx.items_received)                               # Turn ctx.items_received into {ap_item_id: count}, counts are "how many of each AP item id the player owns" (i.e. How many progressive weapons)             
-                owned_weapon_items = resolve_owned_weapons(counts)                              # Resolve non-progressive weapon loadouts
-                owned_weapon_items = expand_progressive_weapons(counts, owned_weapon_items) 
-                loadout = build_mission_start_weapon_loadout(owned_weapon_items)                # Build the mission-start weapon loadout
-
-                current_startup_ids = []
-                desired_startup_ids = []
-                   
-                bonddata_reads = await bizhawk.read(ctx.bizhawk_ctx, [(BONDDATA_pointer_ADDRESS, 4, "RDRAM")])      # read live bonddata pointer
-                int_pointer = int.from_bytes(bonddata_reads[0], "big")                                              # convert the FIRST instance to int
-                bonddata_pointer = rdram_from_pointer(int_pointer)                                                  # convert to bonddata_pointer from rdram
-                
-                snapshot = await read_inventory_snapshot(ctx, bonddata_pointer)                                     # call read_inventory_snapshot(ctx, bonddata_pointer)
-                for entry in snapshot["entries"]:                                                                   # loop through the snapshot
-                    if entry["type"] == INV_ITEM_WEAPON:                                                            # collect current startup inventory ids from active inventory entries
-                        current_startup_ids.append(entry["weapon_id"])                                              # bag it in current_startup_ids
-                
-                gadget_ids = build_mission_start_gadget_ids(mission, counts)                                        # build up gadget ids from current mission and counts
-                startup_entries = build_startup_inventory_entries(loadout, gadget_ids, snapshot["max_items"])       # list of the final planned startup inventory entries as dictionaries. Example single item: {"type": INV_ITEM_WEAPON, "weapon_id": 7, "left_weapon_id": 0}
-
-                for entry in startup_entries:
-                    desired_startup_ids.append(entry["weapon_id"])
-
-                missing_startup_ids = []                            # ids of guns/items the player doesn't currently have
-                extra_startup_ids = []                              # ids of items currently present but not desired
-
-                for desired_id in desired_startup_ids:              # track missing ids
-                    if desired_id not in current_startup_ids:
-                        missing_startup_ids.append(desired_id)
-
-                for current_startup_id in current_startup_ids:
-                    if current_startup_id not in desired_startup_ids and current_startup_id != 1:
-                        extra_startup_ids.append(current_startup_id)                                            # track it in extra_startup_ids
-                                
-                # Debug loggers to check startup lists
-                # logger.info(f"mission: {mission['name']}")                     # mission = Current Mission
-                # logger.info(f"current_startup: {current_startup_ids}")         # current_startup_ids = Vanilla Startup
-                # logger.info(f"desired_startup: {desired_startup_ids}")         # desired_startup_ids = What the startup should be
-                # logger.info(f"missing_startup: {missing_startup_ids}")         # missing_startup_ids = Items that need to be written
-                # logger.info(f"extra_startup: {extra_startup_ids}")             # extra_startup_ids = Items should be removed
-                
-                startup_writes = build_startup_inventory_writes(snapshot, startup_entries, bonddata_pointer)            # Convert the ids to the bytes we're going to write to RAM
-                startup_writes.append((STARTUP_READY_MAILBOX_ADDRESS, [0, 0, 0, 0], "RDRAM"))                           # Clear the startup mailbox
-                await bizhawk.write(ctx.bizhawk_ctx, startup_writes)                                                    # EXECUTE LOADOUT.
-
-############################
-# | Live AP Weapon Receive | #
-############################
-
-            current_items_received_count = len(ctx.items_received)
-
-            if self.previous_items_received_count is None:
-                self.previous_items_received_count = current_items_received_count
-
-            elif current_items_received_count > self.previous_items_received_count and screen_id == SCREEN_GAMEPLAY:
-                previous_items = ctx.items_received[:self.previous_items_received_count]
-                new_items = ctx.items_received[self.previous_items_received_count:current_items_received_count]
-                processed_counts = count_received_items(previous_items)
-
-                bonddata_reads = await bizhawk.read(ctx.bizhawk_ctx, [
-                    (BONDDATA_pointer_ADDRESS, 4, "RDRAM"),
-                ])
-                bonddata_pointer = rdram_from_pointer(int.from_bytes(bonddata_reads[0], "big"))
-
-                for item in new_items:
-                    received_item_id = item.item
-                    live_weapon_item_id = None
-
-                    if received_item_id == PROGRESSIVE_GUN_BASE_ITEM_ID:
-                        processed_counts[PROGRESSIVE_GUN_BASE_ITEM_ID] = processed_counts.get(PROGRESSIVE_GUN_BASE_ITEM_ID, 0) + 1
-                        live_weapon_item_id = resolve_progressive_weapon_item_id(processed_counts[PROGRESSIVE_GUN_BASE_ITEM_ID])
-
-                    elif received_item_id in WEAPON_ITEM_DEFS:
-                        live_weapon_item_id = received_item_id
-
-                    if live_weapon_item_id is not None:
-                        live_writes = await build_live_weapon_receive_writes(ctx, bonddata_pointer, live_weapon_item_id)
-                        if len(live_writes) > 0:
-                            await bizhawk.write(ctx.bizhawk_ctx, live_writes)
-
-                self.previous_items_received_count = current_items_received_count
-
-            elif current_items_received_count < self.previous_items_received_count:
-                self.previous_items_received_count = current_items_received_count
-
-###########################
-# | Mission Clear Check | #
-###########################
-
-            if mission is not None:
-                active_objectives = get_active_objective_checks(ctx, mission, difficulty_code)      # which objective checks matter for this difficulty
-                clear_location_id = get_active_clear_location_id(ctx, mission, difficulty_code)     # which AP location id represents clearing this mission
-
-################################
-# | Freestanding Item Checks | #
-################################
-
-                active_freestanding_weapon_checks = get_active_freestanding_weapon_checks(ctx, mission, difficulty_code) # This level's freestanding weapons
-
-                freestanding_proxy_reads = await bizhawk.read(ctx.bizhawk_ctx, [        # Lua raises this when the proxy pickup is collected
-                    (FREESTANDING_PROXY_MAILBOX_ADDRESS, 4, "RDRAM"),
-                ])
-                freestanding_proxy_state = int.from_bytes(freestanding_proxy_reads[0], "big")
-
-                if freestanding_proxy_state == FREESTANDING_PROXY_MAILBOX_QUEUED and len(active_freestanding_weapon_checks) > 0:
-                    bonddata_reads = await bizhawk.read(ctx.bizhawk_ctx, [(BONDDATA_pointer_ADDRESS, 4, "RDRAM")])      # read live bonddata pointer
-                    bonddata_pointer = rdram_from_pointer(int.from_bytes(bonddata_reads[0], "big"))
-                    snapshot = await read_inventory_snapshot(ctx, bonddata_pointer)
-                    token_cleanup_writes = build_live_inventory_remove_weapon_writes(snapshot, bonddata_pointer, ITEM_TOKEN) # remove the proxy token if it entered inventory
-                    if len(token_cleanup_writes) > 0:
-                        await bizhawk.write(ctx.bizhawk_ctx, token_cleanup_writes)
-
-                    location_id = active_freestanding_weapon_checks[0]["location_id"]   # Dam currently has one freestanding weapon check
-                    if location_id not in self.local_checked_locations:
-                        self.local_checked_locations.add(location_id)
-                        await ctx.send_msgs([{                                          # Send location check to AP
-                            "cmd": "LocationChecks",
-                            "locations": [location_id],
-                        }])
-                    await bizhawk.write(ctx.bizhawk_ctx, [                              # Clear the proxy mailbox once Python has seen it
-                        (FREESTANDING_PROXY_MAILBOX_ADDRESS, u32_bytes(FREESTANDING_PROXY_MAILBOX_EMPTY), "RDRAM"),
-                    ])
-########################
-# | Objective Checks | #
-########################
-
-                objective_flag_reads = await bizhawk.read(ctx.bizhawk_ctx, [
-                    (OBJECTIVE_FLAG_BASE_ADDRESS, OBJECTIVE_FLAG_BLOCK_SIZE, "RDRAM"),
-                ])
-                objective_flags = objective_flag_reads[0]
-
-                # If the mission changed, create the new objective block
-
-                if (mission_id != self.previous_objective_mission_id                    # if mission_id is not equal to the stored previous_mission ID
-                    or selected_difficulty != self.previous_objective_difficulty):      # or difficulty in the case of per difficulty is selected
-                    self.pending_success_objectives.clear()                             # Reset pending success objectives set
-                    self.previous_objective_mission_id = mission_id                     # change mission_id now that it's changed and
-                    self.previous_objective_difficulty = selected_difficulty            # change selected_difficulty now that it's changed and
-                    self.previous_objective_flags = objective_flags                     # change objective_id now that it's changed
-                    return
-                    
-                if objective_flags != self.previous_objective_flags:                    # if objective_flags is not equal to the stored objective flag block
-                    old_objective_flags = self.previous_objective_flags                 # store old_objective_flags so we wait to update until it changes again
-                    self.previous_objective_flags = objective_flags                     # change objective_flags to the current map's objectives
-
-                    for objective in active_objectives:                                 # loop through each of these objectives
-                        flag_offset = objective["flag_offset"]                          # get the flag_offset address for this objective
-                        flag_byte_offset = flag_offset * 4                              # Objectives addresses are offset by 4 bytes
-                        
-                        # "Flag Byte Offset" is the start of the objective's 4-byte slot, if flag offset is 3 then the byte offset is 12
-                        # We need 4 bytes starting at the right spot (eg. 12, 13, 14 ,15)
-                        # Then int.from_bytes ..."big" will turn those bytes into one number, "big" means the leftmost byte is the biggest part
-                        # So like 00 00 00 01 will just become 1
-                        # then "& 0xFF" is just "keep only the last 8 bits"
-
-                        old_objective_status = int.from_bytes(old_objective_flags[flag_byte_offset:flag_byte_offset + 4], "big") & 0xFF
-                        new_objective_status = int.from_bytes(objective_flags[flag_byte_offset:flag_byte_offset + 4], "big") & 0xFF
-
-                        # This concludes the "is the new objective_status we just got different from the old objective_status" block
-
-                        if old_objective_status != 1 and new_objective_status == 1:     # if the stored old objective flag offset is different now
-                            location_id = objective["location_id"]                      # Find that objective's location id
-                            if location_id not in self.local_checked_locations:         # local_checked_locations was initiated in validate_rom
-                                if objective["requires_success"] is False:              # If the objective is marked false in client_data.py
-                                    self.local_checked_locations.add(location_id)       # Add it to checked locations list
-                                    await ctx.send_msgs([{                              # Tell AP to send the location check
-                                        "cmd": "LocationChecks",
-                                        "locations": [location_id]
-                                    }])
-                                else:
-                                    self.pending_success_objectives.add(location_id)    # This is for objectives like Minimize Casualties (requires_success)
-
-                # Check if all objectives have been completed #
-
-                all_active_objectives = True
-
-                for objective in active_objectives:                                                               # loop through each of these objectives (again)              
-                    flag_offset = objective["flag_offset"]                                                        # get the flag offset of that objective (again)
-                    flag_byte_offset = flag_offset * 4                                                            # Objectives addresses are offset by 4 bytes (still)
-                    status = int.from_bytes(objective_flags[flag_byte_offset:flag_byte_offset + 4], "big") & 0xFF # check the status of this objective
-                    if status != 1:                                                                               # if ANY of them are not complete
-                        all_active_objectives = False                                                             # player has NOT finished every objective
-
-#####################
-# | Debrief Block | #
-#####################
-
-                if (screen_id == SCREEN_MISSION_DEBRIEF 
-                    and failed_or_aborted == 0 
-                    and bond_kia == 0 
-                    and all_active_objectives
-                    ): # If the player didn't fuck it up
-
-                    clear_location_id = get_active_clear_location_id(ctx, mission, difficulty_code)  # Get the mission clear location id
-                    location_ids = [clear_location_id]                                               # Start a list of ids to send on success
+            # Set current game state variables
+            screen_id = int.from_bytes(reads[0], "big")
+            mission_id = int.from_bytes(reads[1], "big")
+            selected_difficulty = int.from_bytes(reads[2], "big")
             
-                    for objective in active_objectives:
-                        if objective["requires_success"] is True:                                    # Handle requires_success objectives like Minimize Casualties
-                            location_id = objective["location_id"]
-                            flag_offset = objective["flag_offset"]
-                            flag_byte_offset = flag_offset * 4                  # Objectives addresses are offset by 4 bytes
+            failed_or_aborted = int.from_bytes(reads[3], "big")
+            bond_kia = int.from_bytes(reads[4], "big")
+            bonddata_bytes = reads[5]
+            
+            mission = MISSION_BY_ID.get(mission_id)
 
-                            # Refer to the above & 0xFF lines for reference on all this shit, this is the status of the objective this frame
-                            current_objective_status = int.from_bytes(objective_flags[flag_byte_offset:flag_byte_offset + 4], "big") & 0xFF
+            if screen_id == SCREEN_GAMEPLAY and mission is not None:
+                await bizhawk.guarded_write(ctx.bizhawk_ctx, [
+                    (GUN_PICKUP_OPTION_ADDRESS, bytes([ctx.slot_data["options"]["gun_pickup"]]), "RDRAM"),
+                    (NATIVE_ITEM_PICKUP_OPTION_ADDRESS, bytes([int(ctx.slot_data["options"]["item_shuffle"] == 3)]), "RDRAM"),
+                ], [(SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
+                    (MISSION_ID_ADDRESS, reads[1], "RDRAM"),
+                    (BONDDATA_pointer_ADDRESS, bonddata_bytes, "RDRAM")])
+            
+            if screen_id != SCREEN_GAMEPLAY:
+                self.last_startup_ready_mission = None
+                self.previous_freestanding_mission_id = None
+            
+    # # ~ # # ~ # # ~ # # ~ # # ~ # # ~ # # ~ # #
+    # # The LOOP tm for each valid game frame # #
+    # # ~ # # ~ # # ~ # # ~ # # ~ # # ~ # # ~ # #
+            
+            # We only want info after a mission and difficulty is selected
+            if mission is not None and selected_difficulty in (0, 1, 2): # check if it's a valid frame
+                difficulty_code = selected_difficulty + 1
 
-                            if location_id in self.pending_success_objectives and current_objective_status == 1:
-                                location_ids.append(location_id)                                    # Add the success only objectives to list
+    ###############################
+    # | Mission Startup Loadout | #
+    ###############################
 
-                    self.pending_success_objectives.clear()                                          # reset pending success objectives
+                    # base = vanilla mission startup set
+                    # owned = player has from AP
+                    # current = currently in memory
+                    # desired = should be present after sync
 
-                    new_location_ids = []                                       # Prepare the "new locations to send" list
+                startup_poll = await bizhawk.read(ctx.bizhawk_ctx, [       # Read the startup ready mailbox and set to variable startup_poll
+                    (STARTUP_READY_MAILBOX_ADDRESS, 4, "RDRAM"),           
+                    (KEY_ITEM_STATE_MAILBOX_ADDRESS, 4, "RDRAM"),
+                ])
 
-                    for location_id in location_ids:
-                        if location_id not in self.local_checked_locations:         # Exclude any location_ids already checked
-                            new_location_ids.append(location_id)                    # Add this location_id to the new list
-                    if len(new_location_ids) > 0:                                   # If there's anything new to add
-                        self.local_checked_locations.update(new_location_ids)       # Add it (.update cuz it's a set)
-                        await ctx.send_msgs([{                                      # Ship it to AP
-                        "cmd": "LocationChecks",
-                        "locations": new_location_ids
-                    }])
-                elif screen_id == SCREEN_MISSION_DEBRIEF:                           # If player did fuck it up
-                    self.pending_success_objectives.clear()                         # clear the pending_success_objectives and send fucking nothing
+                startup_ready = int.from_bytes(startup_poll[0], "big")  # goldeneye_ap.lua writes 1, python receives bytes, this converts it to 1
+
+                if screen_id == SCREEN_GAMEPLAY and startup_ready == 1:
+                    self.last_startup_ready_mission = mission_id
+                    counts = count_received_items(ctx.items_received)                               # Turn ctx.items_received into {ap_item_id: count}, counts are "how many of each AP item id the player owns" (i.e. How many progressive weapons)             
+                    owned_weapon_items = resolve_owned_weapons(counts)                              # Resolve non-progressive weapon loadouts
+                    owned_weapon_items = expand_progressive_weapons(counts, owned_weapon_items) 
+                    loadout = build_mission_start_weapon_loadout(owned_weapon_items)                # Build the mission-start weapon loadout
+
+                    current_startup_ids = []
+                    desired_startup_ids = []
+                    
+                    bonddata_reads = await bizhawk.read(ctx.bizhawk_ctx, [(BONDDATA_pointer_ADDRESS, 4, "RDRAM")])      # read live bonddata pointer
+                    int_pointer = int.from_bytes(bonddata_reads[0], "big")                                              # convert the FIRST instance to int
+                    bonddata_pointer = rdram_from_pointer(int_pointer)                                                  # convert to bonddata_pointer from rdram
+                    
+                    snapshot = await read_inventory_snapshot(ctx, bonddata_pointer)                                     # call read_inventory_snapshot(ctx, bonddata_pointer)
+                    for entry in snapshot["entries"]:                                                                   # loop through the snapshot
+                        if entry["type"] == INV_ITEM_WEAPON:                                                            # collect current startup inventory ids from active inventory entries
+                            current_startup_ids.append(entry["weapon_id"])                                              # bag it in current_startup_ids
+                    
+                    gadget_ids = build_mission_start_gadget_ids(mission, counts)                                        # build up gadget ids from current mission and counts
+                    startup_entries = build_startup_inventory_entries(loadout, gadget_ids, snapshot["max_items"])       # list of the final planned startup inventory entries as dictionaries. Example single item: {"type": INV_ITEM_WEAPON, "weapon_id": 7, "left_weapon_id": 0}
+
+                    for entry in startup_entries:
+                        desired_startup_ids.append(entry["weapon_id"])
+
+                    missing_startup_ids = []                            # ids of guns/items the player doesn't currently have
+                    extra_startup_ids = []                              # ids of items currently present but not desired
+
+                    for desired_id in desired_startup_ids:              # track missing ids
+                        if desired_id not in current_startup_ids:
+                            missing_startup_ids.append(desired_id)
+
+                    for current_startup_id in current_startup_ids:
+                        if current_startup_id not in desired_startup_ids and current_startup_id != 1:
+                            extra_startup_ids.append(current_startup_id)                                            # track it in extra_startup_ids
+                                    
+                    # Debug loggers to check startup lists
+                    # logger.info(f"mission: {mission['name']}")                     # mission = Current Mission
+                    # logger.info(f"current_startup: {current_startup_ids}")         # current_startup_ids = Vanilla Startup
+                    # logger.info(f"desired_startup: {desired_startup_ids}")         # desired_startup_ids = What the startup should be
+                    # logger.info(f"missing_startup: {missing_startup_ids}")         # missing_startup_ids = Items that need to be written
+                    # logger.info(f"extra_startup: {extra_startup_ids}")             # extra_startup_ids = Items should be removed
+                    
+                    startup_writes = build_startup_inventory_writes(snapshot, startup_entries, bonddata_pointer)            # Convert the ids to the bytes we're going to write to RAM
+                    startup_writes.append((KEY_ITEM_STATE_MAILBOX_ADDRESS,
+                                           u32_bytes(mission_id << KEY_ITEM_STATE_MISSION_SHIFT), "RDRAM"))
+                    startup_writes.append((STARTUP_READY_MAILBOX_ADDRESS, [0, 0, 0, 0], "RDRAM"))                           # Clear the startup mailbox
+                    if not await bizhawk.guarded_write(ctx.bizhawk_ctx, startup_writes, snapshot["guards"] + [
+                        (SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
+                        (MISSION_ID_ADDRESS, reads[1], "RDRAM"),
+                        (BONDDATA_pointer_ADDRESS, bonddata_reads[0], "RDRAM"),
+                        (STARTUP_READY_MAILBOX_ADDRESS, startup_poll[0], "RDRAM"),
+                    ]):
+                        return
+
+                    # 1. Observe native starting grants before AP replaces the inventory.
+                    starting_sources = get_active_freestanding_pickup_checks(ctx, mission, difficulty_code, "mission_start")
+                    for source in starting_sources:
+                        if source["native_item_id"] not in current_startup_ids:
+                            continue
+                        location_id = source["location_id"]
+                        if location_id in self.local_checked_locations:
+                            continue
+                        # 2. Report only the source consumed by the guarded startup commit.
+                        await ctx.send_msgs([{"cmd": "LocationChecks", "locations": [location_id]}])
+                        self.local_checked_locations.add(location_id)
+                        logger.info("GoldenEye native starting source collected: %s (%d)", source["location_name"], location_id)
+
+                elif screen_id == SCREEN_GAMEPLAY:
+                    # Lua clears this stamp on stage entry. An existing stamp
+                    # lets a restarted client reattach without resetting weapons
+                    # or restoring a consumed semantic key marker.
+                    synced_mission = (int.from_bytes(startup_poll[1], "big") >> KEY_ITEM_STATE_MISSION_SHIFT) & 0xFF
+                    self.last_startup_ready_mission = mission_id if synced_mission == mission_id else None
+
+    ########################
+    # | AP Item Handling | #
+    ########################
+
+                if screen_id == SCREEN_GAMEPLAY and self.last_startup_ready_mission == mission_id:
+                    await write_key_item_receive_state(
+                        ctx,
+                        ctx.items_received,
+                        mission,
+                        reads[0],
+                        reads[1],
+                        bonddata_bytes,
+                    )
+
+    ############################
+    # | Pending refills | #
+    ############################
+
+                # 1. Read the delivery cursor for this seed, team and slot.
+                if (ctx.server_seed_name is not None and ctx.team is not None and ctx.slot is not None
+                    and screen_id == SCREEN_GAMEPLAY and not bond_kia
+                    and self.last_startup_ready_mission == mission_id):
+                    refill_key = json.dumps([ctx.server_seed_name, ctx.team, ctx.slot])
+                    refill_cursor = persistent_load().get("goldeneye_refills", {}).get(refill_key, 0)
+                    bonddata_pointer = rdram_from_pointer(int.from_bytes(bonddata_bytes, "big"))
+                    for item_index in range(refill_cursor, len(ctx.items_received)):
+                        effect = client_data.ITEM_EFFECT_DEFS.get(ctx.items_received[item_index].item)
+                        if effect is None or effect["effect_type"] not in ("health_full", "armor_full", "ammo"):
+                            continue
+                        if bonddata_pointer <= 0:
+                            break
+
+                        # 2. Prepare this delivery using the existing amounts and caps.
+                        effect_type = effect["effect_type"]
+                        offset = {"health_full": 0xDC, "armor_full": 0xE0}.get(effect_type, effect.get("ammo_offset"))
+                        address = bonddata_pointer + offset
+                        old_value = (await bizhawk.read(ctx.bizhawk_ctx, [(address, 4, "RDRAM")]))[0]
+                        value = 0x3F800000
+                        if effect_type == "ammo":
+                            current_ammo = int.from_bytes(old_value, "big")
+                            value = max(current_ammo, min(current_ammo + effect["ammo_grant"], effect["ammo_max"]))
+
+                        # 3. Apply only while the same living player is in gameplay.
+                        if not await bizhawk.guarded_write(ctx.bizhawk_ctx,
+                            [(address, u32_bytes(value), "RDRAM")], [
+                                (address, old_value, "RDRAM"),
+                                (SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
+                                (MISSION_ID_ADDRESS, reads[1], "RDRAM"),
+                                (BONDDATA_pointer_ADDRESS, bonddata_bytes, "RDRAM"),
+                                (BOND_KIA_ADDRESS, reads[4], "RDRAM"),
+                            ]):
+                            break
+
+                        # 4. Save the next AP index, including deliveries already at cap.
+                        persistent_store("goldeneye_refills", refill_key, item_index + 1)
+                        logger.info("GoldenEye refill applied index=%d: %s", item_index, effect["item_name"])
+
+    ############################
+    # | Live weapons and loadout devices | #
+    ############################
+
+                current_items_received_count = len(ctx.items_received)
+
+                if self.previous_items_received_count is None:
+                    self.previous_items_received_count = current_items_received_count
+                    logger.info("GoldenEye AP history ready count=%d", current_items_received_count)
+
+                elif current_items_received_count > self.previous_items_received_count and screen_id == SCREEN_GAMEPLAY:
+                    previous_items = ctx.items_received[:self.previous_items_received_count]
+                    new_items = ctx.items_received[self.previous_items_received_count:current_items_received_count]
+                    processed_counts = count_received_items(previous_items)
+
+                    bonddata_reads = await bizhawk.read(ctx.bizhawk_ctx, [
+                        (BONDDATA_pointer_ADDRESS, 4, "RDRAM"),
+                    ])
+                    bonddata_pointer = rdram_from_pointer(int.from_bytes(bonddata_reads[0], "big"))
+
+                    for item_index, item in enumerate(new_items, self.previous_items_received_count):
+                        received_item_id = item.item
+                        live_weapon_item_id = None
+
+                        effect = client_data.ITEM_EFFECT_DEFS.get(received_item_id)
+                        if effect is not None and effect["effect_type"] not in ("health_full", "armor_full", "ammo"):
+                            logger.error("GoldenEye unsupported received effect: %s (%s)", effect["item_name"], effect["effect_type"])
+
+                        if received_item_id == PROGRESSIVE_GUN_BASE_ITEM_ID:
+                            processed_counts[PROGRESSIVE_GUN_BASE_ITEM_ID] = processed_counts.get(PROGRESSIVE_GUN_BASE_ITEM_ID, 0) + 1
+                            live_weapon_item_id = resolve_progressive_weapon_item_id(processed_counts[PROGRESSIVE_GUN_BASE_ITEM_ID])
+
+                        elif received_item_id in WEAPON_ITEM_DEFS:
+                            live_weapon_item_id = received_item_id
+
+                        weapon_def = WEAPON_ITEM_DEFS.get(live_weapon_item_id)
+                        logger.info(
+                            "GoldenEye ReceivedItems index=%d item_id=%d item_name=%s",
+                            item_index,
+                            received_item_id,
+                            weapon_def["item_name"] if weapon_def is not None else "non-weapon",
+                        )
+
+                        if live_weapon_item_id is not None:
+                            live_writes = await build_live_weapon_receive_writes(ctx, bonddata_pointer, live_weapon_item_id)
+                            if len(live_writes) > 0:
+                                await bizhawk.write(ctx.bizhawk_ctx, live_writes)
+
+                        # 1. Select the received device for this generated mission.
+                        gadget = client_data.LOADOUT_GADGETS.get(received_item_id)
+                        if gadget is not None and mission["name"] in gadget["missions"]:
+                            if self.last_startup_ready_mission != mission_id:
+                                return
+                            # 2. Read native inventory and add only the missing device.
+                            snapshot = await read_inventory_snapshot(ctx, bonddata_pointer)
+                            if "guards" not in snapshot:
+                                return
+                            gadget_writes = build_live_inventory_add_weapon_writes(
+                                snapshot, bonddata_pointer, gadget["item_id"])
+                            # 3. Commit while the mission and inventory still match.
+                            if gadget_writes and not await bizhawk.guarded_write(
+                                ctx.bizhawk_ctx, gadget_writes, snapshot["guards"] + [
+                                    (SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
+                                    (MISSION_ID_ADDRESS, reads[1], "RDRAM"),
+                                    (BONDDATA_pointer_ADDRESS, bonddata_reads[0], "RDRAM"),
+                                ]):
+                                return
+                            logger.info("GoldenEye live device received: %s", gadget["item_name"])
+                        # 4. Advance after each receipt so a guarded retry cannot repeat earlier grants.
+                        self.previous_items_received_count = item_index + 1
+
+                elif current_items_received_count < self.previous_items_received_count:
+                    self.previous_items_received_count = current_items_received_count
+
+    ############################
+    # | AP Location Handling | #
+    ############################
+
+                if mission is not None:
+                    # 1. Select this mission's generated sources and objectives.
+                    active_objectives = get_active_objective_checks(ctx, mission, difficulty_code)      # which objective checks matter for this difficulty
+                    active_freestanding_pickup_checks = get_active_freestanding_pickup_checks(ctx, mission, difficulty_code)
+
+                    # 2. Publish source identities. Reset old results in the same
+                    # bridge request, before the new targets can be collected.
+                    freestanding_target_writes = build_freestanding_target_writes(active_freestanding_pickup_checks)
+                    if mission_id != self.previous_freestanding_mission_id:
+                        freestanding_target_writes.insert(0,
+                            (FREESTANDING_RESULT_MAILBOX_ADDRESS, u32_bytes(0), "RDRAM"))
+                    await bizhawk.write(ctx.bizhawk_ctx, freestanding_target_writes)
+                    if mission_id != self.previous_freestanding_mission_id:
+                        self.previous_freestanding_mission_id = mission_id
+
+                    # 3. Read actual source acquisitions latched by the frame callback.
+                    # AP receipts and general inventory ownership never create these bits.
+                    freestanding_result_reads = await bizhawk.read(ctx.bizhawk_ctx, [
+                        (FREESTANDING_RESULT_MAILBOX_ADDRESS, 4, "RDRAM"),
+                    ])
+                    freestanding_result_state = int.from_bytes(freestanding_result_reads[0], "big")
+
+                    # 4. Send the generated location IDs. Clear only the result word
+                    # we read, so a second acquisition during server IO is retained.
+                    if freestanding_result_state and active_freestanding_pickup_checks:
+                        handled_bits = 0
+                        for matched_target_index, check in enumerate(active_freestanding_pickup_checks):
+                            target_bit = 1 << matched_target_index
+                            if not freestanding_result_state & target_bit:
+                                continue
+                            handled_bits |= target_bit
+                            location_id = check["location_id"]
+                            location_name = check["location_name"]
+                            logger.info(
+                                "GoldenEye freestanding pickup recognized index=%d location_id=%d location_name=%s",
+                                matched_target_index,
+                                location_id,
+                                location_name,
+                            )
+                            if location_id not in self.local_checked_locations:
+                                self.local_checked_locations.add(location_id)
+                                await ctx.send_msgs([{                                          # Send location check to AP
+                                    "cmd": "LocationChecks",
+                                    "locations": [location_id],
+                                }])
+                                logger.info(
+                                    "GoldenEye freestanding check sent location_id=%d location_name=%s",
+                                    location_id,
+                                    location_name,
+                                )
+                        if handled_bits:
+                            await bizhawk.guarded_write(ctx.bizhawk_ctx, [
+                                (FREESTANDING_RESULT_MAILBOX_ADDRESS, u32_bytes(freestanding_result_state & ~handled_bits), "RDRAM"),
+                            ], [(FREESTANDING_RESULT_MAILBOX_ADDRESS, freestanding_result_reads[0], "RDRAM")])
+
+                    # 5. Observe native objective transitions and retain success-only checks.
+                    objective_flag_reads = await bizhawk.read(ctx.bizhawk_ctx, [
+                        (OBJECTIVE_FLAG_BASE_ADDRESS, OBJECTIVE_FLAG_BLOCK_SIZE, "RDRAM"),
+                    ])
+                    objective_flags = objective_flag_reads[0]
+
+                    # If the mission changed, create the new objective block
+
+                    if (mission_id != self.previous_objective_mission_id                    # if mission_id is not equal to the stored previous_mission ID
+                        or selected_difficulty != self.previous_objective_difficulty):      # or difficulty in the case of per difficulty is selected
+                        self.pending_success_objectives.clear()                             # Reset pending success objectives set
+                        self.previous_objective_mission_id = mission_id                     # change mission_id now that it's changed and
+                        self.previous_objective_difficulty = selected_difficulty            # change selected_difficulty now that it's changed and
+                        self.previous_objective_flags = objective_flags                     # change objective_id now that it's changed
+                        return
+                        
+                    if objective_flags != self.previous_objective_flags:                    # if objective_flags is not equal to the stored objective flag block
+                        old_objective_flags = self.previous_objective_flags                 # store old_objective_flags so we wait to update until it changes again
+                        self.previous_objective_flags = objective_flags                     # change objective_flags to the current map's objectives
+
+                        for objective in active_objectives:                                 # loop through each of these objectives
+                            flag_offset = objective["flag_offset"]                          # get the flag_offset address for this objective
+                            flag_byte_offset = flag_offset * 4                              # Objectives addresses are offset by 4 bytes
+                            
+                            # "Flag Byte Offset" is the start of the objective's 4-byte slot, if flag offset is 3 then the byte offset is 12
+                            # We need 4 bytes starting at the right spot (eg. 12, 13, 14 ,15)
+                            # Then int.from_bytes ..."big" will turn those bytes into one number, "big" means the leftmost byte is the biggest part
+                            # So like 00 00 00 01 will just become 1
+                            # then "& 0xFF" is just "keep only the last 8 bits"
+
+                            old_objective_status = int.from_bytes(old_objective_flags[flag_byte_offset:flag_byte_offset + 4], "big") & 0xFF
+                            new_objective_status = int.from_bytes(objective_flags[flag_byte_offset:flag_byte_offset + 4], "big") & 0xFF
+
+                            # This concludes the "is the new objective_status we just got different from the old objective_status" block
+
+                            if old_objective_status != 1 and new_objective_status == 1:     # if the stored old objective flag offset is different now
+                                location_id = objective["location_id"]                      # Find that objective's location id
+                                if location_id not in self.local_checked_locations:         # local_checked_locations was initiated in validate_rom
+                                    if objective["requires_success"] is False:              # If the objective is marked false in client_data.py
+                                        self.local_checked_locations.add(location_id)       # Add it to checked locations list
+                                        await ctx.send_msgs([{                              # Tell AP to send the location check
+                                            "cmd": "LocationChecks",
+                                            "locations": [location_id]
+                                        }])
+                                    else:
+                                        self.pending_success_objectives.add(location_id)    # This is for objectives like Minimize Casualties (requires_success)
+
+                    # Check if all objectives have been completed #
+
+                    all_active_objectives = True
+
+                    for objective in active_objectives:                                                               # loop through each of these objectives (again)              
+                        flag_offset = objective["flag_offset"]                                                        # get the flag offset of that objective (again)
+                        flag_byte_offset = flag_offset * 4                                                            # Objectives addresses are offset by 4 bytes (still)
+                        status = int.from_bytes(objective_flags[flag_byte_offset:flag_byte_offset + 4], "big") & 0xFF # check the status of this objective
+                        if status != 1:                                                                               # if ANY of them are not complete
+                            all_active_objectives = False                                                             # player has NOT finished every objective
+
+                    # 6. At a successful debrief, send the mission clear and its
+                    # pending success-only objectives. Failed attempts clear the pending set.
+
+                    if (screen_id == SCREEN_MISSION_DEBRIEF 
+                        and failed_or_aborted == 0 
+                        and bond_kia == 0 
+                        and all_active_objectives
+                        ):
+
+                        clear_location_id = get_active_clear_location_id(ctx, mission, difficulty_code)  # Get the mission clear location id
+                        location_ids = [clear_location_id]                                               # Start a list of ids to send on success
+                
+                        for objective in active_objectives:
+                            if objective["requires_success"] is True:                                    # Handle requires_success objectives like Minimize Casualties
+                                location_id = objective["location_id"]
+                                flag_offset = objective["flag_offset"]
+                                flag_byte_offset = flag_offset * 4                  # Objectives addresses are offset by 4 bytes
+
+                                # Refer to the above & 0xFF lines for reference on all this shit, this is the status of the objective this frame
+                                current_objective_status = int.from_bytes(objective_flags[flag_byte_offset:flag_byte_offset + 4], "big") & 0xFF
+
+                                if location_id in self.pending_success_objectives and current_objective_status == 1:
+                                    location_ids.append(location_id)                                    # Add the success only objectives to list
+
+                        self.pending_success_objectives.clear()                                          # reset pending success objectives
+
+                        new_location_ids = []                                       # Prepare the "new locations to send" list
+
+                        for location_id in location_ids:
+                            if location_id not in self.local_checked_locations:         # Exclude any location_ids already checked
+                                new_location_ids.append(location_id)                    # Add this location_id to the new list
+                        if len(new_location_ids) > 0:                                   # If there's anything new to add
+                            self.local_checked_locations.update(new_location_ids)       # Add it (.update cuz it's a set)
+                            await ctx.send_msgs([{                                      # Ship it to AP
+                            "cmd": "LocationChecks",
+                            "locations": new_location_ids
+                        }])
+                    elif screen_id == SCREEN_MISSION_DEBRIEF:
+                        self.pending_success_objectives.clear()
+
+        except bizhawk.RequestFailedError:
+            self.last_startup_ready_mission = None
+            self.previous_freestanding_mission_id = None
+            return

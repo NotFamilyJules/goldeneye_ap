@@ -10,7 +10,7 @@ from worlds.AutoWorld import WebWorld, World
 # package and does not add gameplay logic of its own.
 from .GoldeneyeClient import GoldeneyeClient
 from .Items import MISSION_UNLOCK_NAMES, create_item, create_itempool, item_table
-from .Locations import get_location_names, get_total_locations
+from .Locations import get_location_names, get_total_locations, is_enabled_extra_region
 from .Options import GoldeneyeOptions, create_option_groups
 from .Regions import create_regions
 from .Rules import set_rules
@@ -57,6 +57,16 @@ class GoldeneyeWorld(World):
     web = GoldeneyeWeb()
 
     def generate_early(self) -> None:
+        # 1. Resolve Random once, using only missions enabled for this world.
+        if self.options.starting_mission.value == self.options.starting_mission.random_value:
+            eligible_missions = [
+                mission_id
+                for mission_id, mission_name in enumerate(MISSION_UNLOCK_NAMES, start=1)
+                if is_enabled_extra_region(self, mission_name)
+            ]
+            self.options.starting_mission.value = self.random.choice(eligible_missions)
+
+        # 2. Give the resolved mission its normal starting unlock.
         self.multiworld.push_precollected(
             self.create_item(MISSION_UNLOCK_NAMES[self.options.starting_mission.value - 1])
         )
