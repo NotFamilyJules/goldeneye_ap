@@ -89,7 +89,9 @@
 import worlds._bizhawk as bizhawk
 import logging
 import json
+import struct
 from Utils import persistent_load, persistent_store
+from NetUtils import ClientStatus
 from . import client_data
 from worlds._bizhawk.client import BizHawkClient
 
@@ -109,6 +111,10 @@ DIFFICULTY_ADDRESS = 0x2A8FC
 UNLOCK_BASE_ADDRESS = 0x7F000
 GUN_PICKUP_OPTION_ADDRESS = 0x7F208
 NATIVE_ITEM_PICKUP_OPTION_ADDRESS = 0x7F209
+GUARD_AMMO_EVENTS_ADDRESS = 0x7F20C
+SOLO_AMMO_MULTIPLIER_ADDRESS = 0x30B28
+TANK_OWNED_ADDRESS = 0x7F20A
+TANK_DESCRIPTOR_ADDRESS = 0x7F210
 OBJECTIVE_FLAG_BASE_ADDRESS = 0x75D58
 OBJECTIVE_FLAG_BLOCK_SIZE = 40
 
@@ -123,6 +129,20 @@ OFF_INV_HEAD = 0x11E0           # Head refers to the first active inventory entr
 OFF_INV_POOL = 0x11E4
 OFF_INV_MAX = 0x11E8
 OFF_ALL_GUNS = 0x11EC
+
+########################
+# | Cheat Shuffler | #
+########################
+# US native cheat menu arrays and mission timer (front.c and bondview.c).
+CHEAT_EFFECTS = {item_id: effect for item_id, effect in client_data.ITEM_EFFECT_DEFS.items()
+                 if effect["effect_type"] == "cheat"}
+CHEAT_AVAILABLE_ADDRESS = 0x69650
+CHEAT_ACTIVE_ADDRESS = 0x696A0
+CHEAT_MODE_ADDRESS = 0x2A900
+CHEAT_APPLIED_ADDRESS = 0x79E30  # Native per-player cheat effects, cleared each mission.
+CHEAT_REQUEST_ADDRESS = 0x7F214  # Upper bytes: mission ID. Low byte: native cheat ID.
+CHEAT_COUNT = 80
+MISSION_TIMER_ADDRESS = 0x79A20
 OFF_EQUIP_CUR = 0x11F0
 
 INV_ITEM_NONE = -1
@@ -153,8 +173,10 @@ OFF_COPIED_GOLDENEYE = 0x1060
 
 FREESTANDING_RESULT_MAILBOX_ADDRESS = 0x7F1C0 # result mailbox from Lua to Python
 FREESTANDING_TARGET_COUNT_ADDRESS = 0x7F1C4 # target count from Python to Lua
-FREESTANDING_TARGET_LIST_ADDRESS = 0x7F1C8 # packed 28-bit kind/model/pad descriptors
-FREESTANDING_TARGET_LIST_SIZE = KEY_ITEM_FLAGS_MAILBOX_ADDRESS - FREESTANDING_TARGET_LIST_ADDRESS
+# 32 packed descriptors fit before the existing result mailbox. The patcher
+# reserves the AP tail of bg.c's portal queue, starting at 0x7F000.
+FREESTANDING_TARGET_LIST_ADDRESS = 0x7F150
+FREESTANDING_TARGET_LIST_SIZE = FREESTANDING_RESULT_MAILBOX_ADDRESS - FREESTANDING_TARGET_LIST_ADDRESS
 
 #   Mission and Objective Data from client_data.py
 
@@ -491,10 +513,16 @@ async def write_key_watch_entries(ctx, items_received, mission, bonddata_bytes, 
 def get_active_freestanding_pickup_checks(ctx, mission, difficulty_code, source_type="freestanding_pickup"):
     item_shuffle = ctx.slot_data["options"]["item_shuffle"]
     if item_shuffle == 2:
-        return mission.get(f"shared_{source_type}_checks", [])
-    if item_shuffle == 1:
-        return mission.get(f"per_difficulty_{source_type}_checks", {}).get(difficulty_code, [])
-    return []
+        checks = mission.get(f"shared_{source_type}_checks", [])
+    elif item_shuffle == 1:
+        checks = mission.get(f"per_difficulty_{source_type}_checks", {}).get(difficulty_code, [])
+    else:
+        return []
+    # Use the server's enabled locations for option and release filtering.
+    server_locations = getattr(ctx, "server_locations", None)
+    return [check for check in checks
+            if difficulty_code in check.get("difficulty_codes", (1, 2, 3))
+            and (server_locations is None or check["location_id"] in server_locations)]
 
 def build_freestanding_target_writes(active_freestanding_pickup_checks):
     count = len(active_freestanding_pickup_checks)
@@ -563,7 +591,7 @@ def build_mission_start_gadget_ids(mission, counts):
             gadget_ids.append(game_id)                              # Add it to gadget_ids
     return gadget_ids                                               # Return gadget_ids
 
-def build_startup_inventory_entries(loadout, gadget_ids, max_items): 
+def build_startup_inventory_entries(loadout, gadget_ids, max_items, selected_cheats=()): 
     
     # This function prepares the list of items to be written at the moment of loadout.  
     # This is tricky because we want to preserve memory to avoid pissing off the fragile code here, 
@@ -618,6 +646,18 @@ def build_startup_inventory_entries(loadout, gadget_ids, max_items):
         if group:                                               # If group is not empty, add it to weapon_groups
             weapon_groups.append(group)
 
+    # Native weapon cheats run before AP startup. Keep their single/dual nodes.
+    for cheat in selected_cheats:
+        weapon_id = cheat.get("weapon_id")
+        if weapon_id is None:
+            continue
+        if weapon_id not in used_ids:
+            weapon_groups.append([{"type": INV_ITEM_WEAPON, "weapon_id": weapon_id, "left_weapon_id": 0}])
+            used_ids.add(weapon_id)
+        if cheat.get("dual"):
+            weapon_groups.append([{"type": 3, "weapon_id": weapon_id, "left_weapon_id": weapon_id}])
+    weapon_groups.sort(key=lambda group: group[0]["weapon_id"])
+
 ### 2. Build Gadget Entries ##
 
     gadget_entries = []
@@ -643,7 +683,7 @@ def build_startup_inventory_entries(loadout, gadget_ids, max_items):
     
     return loadout_items
 
-def build_startup_inventory_writes(snapshot, startup_entries, bonddata_pointer): # compile the list of actual literal RAM writes to the game
+def build_startup_inventory_writes(snapshot, startup_entries, bonddata_pointer, all_guns=False): # compile the list of actual literal RAM writes to the game
     # format for each write = (address, bytes, "RDRAM")
     # write (type, weapon_id, left_weapon_id, next pointer, previous pointer)
     # The inventory list is circular: slot 0 goes "next" to slot 1, then the last slot goes "next" back to 0. 0 points "previous" to the last slot
@@ -690,22 +730,33 @@ def build_startup_inventory_writes(snapshot, startup_entries, bonddata_pointer):
     else: 
         head_data = pointer_bytes(0)
     writes.append((bonddata_pointer + OFF_INV_HEAD, head_data, "RDRAM"))        # If there are entries, direct the writes to the current pool_pointer for the current BONDdata
-    writes.append((bonddata_pointer + OFF_ALL_GUNS, u32_bytes(0), "RDRAM"))     # set all guns to 0
+    writes.append((bonddata_pointer + OFF_ALL_GUNS, u32_bytes(int(all_guns)), "RDRAM"))
     writes.append((bonddata_pointer + OFF_EQUIP_CUR, u32_bytes(0), "RDRAM"))    # reset current equipped inventory index
 
     return writes
 
-def build_ammo_writes(loadout):                                 # Prepare ammo info to be granted on loadout
-    ammo_writes = []
-
+def build_ammo_writes(loadout, received_counts):
+    # 1. Share one configured base amount among guns using the same ammunition.
+    amounts = {}
+    limits = {}
     for weapon in loadout:
-        if weapon["ammo_offset"] is not None:                   # Only ammo for weapons with ammo (i.e. not the hunting knife)
-            ammo_writes.append({
-                "ammo_offset": weapon["ammo_offset"],
-                "ammo_grant": weapon["ammo_grant"],
-                "ammo_max": weapon["ammo_max"],
-            })
-    return ammo_writes
+        offset = weapon["ammo_offset"]
+        if offset is not None:
+            amounts[offset] = max(amounts.get(offset, 0), weapon["ammo_grant"])
+            limits[offset] = weapon["ammo_max"]
+
+    # 2. Every AP delivery contributes once, independently of weapon ownership.
+    for item_id, count in received_counts.items():
+        effect = client_data.ITEM_EFFECT_DEFS.get(item_id)
+        if effect is None or effect["effect_type"] != "ammo":
+            continue
+        offset = effect["ammo_offset"]
+        amounts[offset] = amounts.get(offset, 0) + count * effect["ammo_grant"]
+        limits[offset] = effect["ammo_max"]
+
+    # 3. Return desired starting amounts, never increments to existing reserves.
+    return [{"ammo_offset": offset, "ammo_grant": min(amount, limits[offset]),
+             "ammo_max": limits[offset]} for offset, amount in amounts.items()]
 
 def resolve_progressive_weapon_item_id(progressive_count):
     if progressive_count <= 0:
@@ -911,6 +962,21 @@ class GoldeneyeClient(BizHawkClient):
 
         if "GOLDENEYE" not in title.upper():
             return False
+
+        transport = await bizhawk.read(ctx.bizhawk_ctx, [(0x428C4, 8, "ROM"),
+                                                        (0xEC998, 4, "ROM"), (0xECA80, 4, "ROM")])
+        if ([bytes(value) for value in transport] !=
+            [bytes.fromhex("2508f1508d090074"), bytes.fromhex("24010178"), bytes.fromhex("24010178")]):
+            logger.error("Rebuild the AP ROM with this package's patcher; its pickup table or mailbox reservation is outdated.")
+            return False
+
+        if CHEAT_EFFECTS:
+            signatures = await bizhawk.read(ctx.bizhawk_ctx, [(0x03E378, 20, "ROM"),
+                (0xF4340, 4, "ROM"), (0x3E390, 4, "ROM")])
+            if [bytes(value) for value in signatures] != [bytes.fromhex("3c088007010440219102965003e0000800000000"),
+                bytes.fromhex("0fc02617"), bytes.fromhex("8d09f214")]:
+                logger.error("Rebuild the ROM with this package's patcher; automatic cheat activation requires its native hook.")
+                return False
         
         # CTX = Client Context Object. A ctx is a live Archipelago client state object that is passed through this code.
         ctx.game = self.game
@@ -946,14 +1012,27 @@ class GoldeneyeClient(BizHawkClient):
             checked_locations = getattr(ctx, "locations_checked", None)
             if checked_locations is None:
                 checked_locations = getattr(ctx, "checked_locations", None)
+            checked_locations = set(checked_locations or ())
 
             if checked_locations:
                 for location_id in checked_locations:
                     self.local_checked_locations.add(int(location_id))
 
+            # Goal completion follows server-confirmed clears, not item delivery.
+            goal_groups = ctx.slot_data.get("goal_clear_groups", [])
+            if goal_groups and all(any(location_id in checked_locations for location_id in group)
+                                   for group in goal_groups):
+                goal_location_id = ctx.slot_data["goal_location_id"]
+                if goal_location_id not in self.local_checked_locations:
+                    await ctx.send_msgs([{"cmd": "LocationChecks", "locations": [goal_location_id]}])
+                    self.local_checked_locations.add(goal_location_id)
+                if goal_location_id in checked_locations and not ctx.finished_game:
+                    await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
+                    ctx.finished_game = True
+
             server_checked_locations = sorted(int(location_id) for location_id in (checked_locations or []))
             if server_checked_locations != self.previous_server_checked_locations:
-                logger.info("GoldenEye server checked locations=%s", server_checked_locations)
+                logger.debug("GoldenEye server checked locations=%s", server_checked_locations)
                 self.previous_server_checked_locations = server_checked_locations
 
             # Get the starting mission from slot_data and build the unlock block
@@ -988,9 +1067,14 @@ class GoldeneyeClient(BizHawkClient):
             mission = MISSION_BY_ID.get(mission_id)
 
             if screen_id == SCREEN_GAMEPLAY and mission is not None:
+                tank = client_data.TANKS_BY_MISSION_NAME.get(mission["name"])
+                tank_owned = tank is not None and any(item.item == tank["ap_item_id"] for item in ctx.items_received)
+                tank_descriptor = (tank["model"] << 16) | tank["pad"] if tank else 0
                 await bizhawk.guarded_write(ctx.bizhawk_ctx, [
                     (GUN_PICKUP_OPTION_ADDRESS, bytes([ctx.slot_data["options"]["gun_pickup"]]), "RDRAM"),
                     (NATIVE_ITEM_PICKUP_OPTION_ADDRESS, bytes([int(ctx.slot_data["options"]["item_shuffle"] == 3)]), "RDRAM"),
+                    (TANK_OWNED_ADDRESS, bytes([int(tank_owned)]), "RDRAM"),
+                    (TANK_DESCRIPTOR_ADDRESS, u32_bytes(tank_descriptor), "RDRAM"),
                 ], [(SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
                     (MISSION_ID_ADDRESS, reads[1], "RDRAM"),
                     (BONDDATA_pointer_ADDRESS, bonddata_bytes, "RDRAM")])
@@ -998,6 +1082,28 @@ class GoldeneyeClient(BizHawkClient):
             if screen_id != SCREEN_GAMEPLAY:
                 self.last_startup_ready_mission = None
                 self.previous_freestanding_mission_id = None
+
+    ########################
+    # | Cheat Shuffler | #
+    ########################
+
+            # 1. Enable new unlocks once; preserve the player's later menu choices.
+            cheat_shuffler = ctx.slot_data["options"].get("cheat_shuffler", 0) == 1
+            owned_cheats = {CHEAT_EFFECTS[item.item]["cheat_id"]: CHEAT_EFFECTS[item.item]
+                            for item in ctx.items_received if item.item in CHEAT_EFFECTS} if cheat_shuffler else {}
+            if cheat_shuffler and screen_id not in (SCREEN_GAMEPLAY, SCREEN_MISSION_DEBRIEF):
+                available_bytes, active_bytes = await bizhawk.read(ctx.bizhawk_ctx, [
+                    (CHEAT_AVAILABLE_ADDRESS, CHEAT_COUNT, "RDRAM"),
+                    (CHEAT_ACTIVE_ADDRESS, CHEAT_COUNT, "RDRAM")])
+                available = bytes(int(cheat_id in owned_cheats) for cheat_id in range(CHEAT_COUNT))
+                active = bytes(int(available[index] and (active_bytes[index] or not available_bytes[index]))
+                               for index in range(CHEAT_COUNT))
+                await bizhawk.guarded_write(ctx.bizhawk_ctx, [
+                    (CHEAT_AVAILABLE_ADDRESS, available, "RDRAM"),
+                    (CHEAT_ACTIVE_ADDRESS, active, "RDRAM"),
+                ], [(SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
+                    (CHEAT_AVAILABLE_ADDRESS, available_bytes, "RDRAM"),
+                    (CHEAT_ACTIVE_ADDRESS, active_bytes, "RDRAM")])
             
     # # ~ # # ~ # # ~ # # ~ # # ~ # # ~ # # ~ # #
     # # The LOOP tm for each valid game frame # #
@@ -1025,10 +1131,22 @@ class GoldeneyeClient(BizHawkClient):
 
                 if screen_id == SCREEN_GAMEPLAY and startup_ready == 1:
                     self.last_startup_ready_mission = mission_id
-                    counts = count_received_items(ctx.items_received)                               # Turn ctx.items_received into {ap_item_id: count}, counts are "how many of each AP item id the player owns" (i.e. How many progressive weapons)             
+                    startup_items = tuple(ctx.items_received)
+                    counts = count_received_items(startup_items)
                     owned_weapon_items = resolve_owned_weapons(counts)                              # Resolve non-progressive weapon loadouts
                     owned_weapon_items = expand_progressive_weapons(counts, owned_weapon_items) 
                     loadout = build_mission_start_weapon_loadout(owned_weapon_items)                # Build the mission-start weapon loadout
+
+                    selected_cheats = []
+                    cheat_guards = []
+                    if cheat_shuffler:
+                        cheat_state = await bizhawk.read(ctx.bizhawk_ctx, [
+                            (CHEAT_ACTIVE_ADDRESS, CHEAT_COUNT, "RDRAM"), (CHEAT_MODE_ADDRESS, 4, "RDRAM")])
+                        if int.from_bytes(cheat_state[1], "big"):
+                            selected_cheats = [effect for cheat_id, effect in sorted(owned_cheats.items())
+                                               if cheat_state[0][cheat_id]]
+                        cheat_guards = [(CHEAT_ACTIVE_ADDRESS, cheat_state[0], "RDRAM"),
+                                        (CHEAT_MODE_ADDRESS, cheat_state[1], "RDRAM")]
 
                     current_startup_ids = []
                     desired_startup_ids = []
@@ -1043,7 +1161,7 @@ class GoldeneyeClient(BizHawkClient):
                             current_startup_ids.append(entry["weapon_id"])                                              # bag it in current_startup_ids
                     
                     gadget_ids = build_mission_start_gadget_ids(mission, counts)                                        # build up gadget ids from current mission and counts
-                    startup_entries = build_startup_inventory_entries(loadout, gadget_ids, snapshot["max_items"])       # list of the final planned startup inventory entries as dictionaries. Example single item: {"type": INV_ITEM_WEAPON, "weapon_id": 7, "left_weapon_id": 0}
+                    startup_entries = build_startup_inventory_entries(loadout, gadget_ids, snapshot["max_items"], selected_cheats)
 
                     for entry in startup_entries:
                         desired_startup_ids.append(entry["weapon_id"])
@@ -1066,17 +1184,41 @@ class GoldeneyeClient(BizHawkClient):
                     # logger.info(f"missing_startup: {missing_startup_ids}")         # missing_startup_ids = Items that need to be written
                     # logger.info(f"extra_startup: {extra_startup_ids}")             # extra_startup_ids = Items should be removed
                     
-                    startup_writes = build_startup_inventory_writes(snapshot, startup_entries, bonddata_pointer)            # Convert the ids to the bytes we're going to write to RAM
+                    startup_writes = build_startup_inventory_writes(snapshot, startup_entries, bonddata_pointer,
+                        all_guns=any(effect.get("all_guns") for effect in selected_cheats))
+                    # 1. Reconstruct ammunition once, after native startup resets.
+                    for ammo in build_ammo_writes(loadout, counts):
+                        startup_writes.append((bonddata_pointer + ammo["ammo_offset"],
+                                               u32_bytes(ammo["ammo_grant"]), "RDRAM"))
+
+                    # Native weapon cheats start with their native ammunition cap.
+                    for effect in selected_cheats:
+                        if "ammo_offset" in effect:
+                            startup_writes.append((bonddata_pointer + effect["ammo_offset"],
+                                                   u32_bytes(effect["ammo_max"]), "RDRAM"))
+
+                    # 2. Include pending armor and health in this same startup commit.
+                    refill_key = json.dumps([ctx.server_seed_name, ctx.team, ctx.slot])
+                    refill_cursor = persistent_load().get("goldeneye_refills", {}).get(refill_key, 0)
+                    for item in startup_items[refill_cursor:]:
+                        effect = client_data.ITEM_EFFECT_DEFS.get(item.item)
+                        if effect is not None and effect["effect_type"] in ("armor_full", "health_full"):
+                            offset = 0xE0 if effect["effect_type"] == "armor_full" else 0xDC
+                            startup_writes.append((bonddata_pointer + offset, u32_bytes(0x3F800000), "RDRAM"))
                     startup_writes.append((KEY_ITEM_STATE_MAILBOX_ADDRESS,
                                            u32_bytes(mission_id << KEY_ITEM_STATE_MISSION_SHIFT), "RDRAM"))
                     startup_writes.append((STARTUP_READY_MAILBOX_ADDRESS, [0, 0, 0, 0], "RDRAM"))                           # Clear the startup mailbox
-                    if not await bizhawk.guarded_write(ctx.bizhawk_ctx, startup_writes, snapshot["guards"] + [
+                    if not await bizhawk.guarded_write(ctx.bizhawk_ctx, startup_writes, snapshot["guards"] + cheat_guards + [
                         (SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
                         (MISSION_ID_ADDRESS, reads[1], "RDRAM"),
                         (BONDDATA_pointer_ADDRESS, bonddata_reads[0], "RDRAM"),
                         (STARTUP_READY_MAILBOX_ADDRESS, startup_poll[0], "RDRAM"),
                     ]):
                         return
+
+                    # 3. Historical refills are already included. Later deliveries stay live.
+                    persistent_store("goldeneye_refills", refill_key, len(startup_items))
+                    self.previous_items_received_count = len(startup_items)
 
                     # 1. Observe native starting grants before AP replaces the inventory.
                     starting_sources = get_active_freestanding_pickup_checks(ctx, mission, difficulty_code, "mission_start")
@@ -1155,15 +1297,105 @@ class GoldeneyeClient(BizHawkClient):
                         persistent_store("goldeneye_refills", refill_key, item_index + 1)
                         logger.info("GoldenEye refill applied index=%d: %s", item_index, effect["item_name"])
 
-    ############################
+    ########################################
+    # | Cheat Shuffler: Live Activation | #
+    ########################################
+
+                # 1. Activate missing AP cheat effects after the startup inventory commit.
+                if (owned_cheats and screen_id == SCREEN_GAMEPLAY and not bond_kia
+                    and self.last_startup_ready_mission == mission_id):
+                    applied, pending, available, active = await bizhawk.read(ctx.bizhawk_ctx, [
+                        (CHEAT_APPLIED_ADDRESS, CHEAT_COUNT, "RDRAM"),
+                        (CHEAT_REQUEST_ADDRESS, 4, "RDRAM"),
+                        (CHEAT_AVAILABLE_ADDRESS, CHEAT_COUNT, "RDRAM"),
+                        (CHEAT_ACTIVE_ADDRESS, CHEAT_COUNT, "RDRAM"),
+                    ])
+                    if not int.from_bytes(pending, "big"):
+                        for cheat_id, effect in owned_cheats.items():
+                            if applied[cheat_id] & 1:
+                                continue
+                            if available[cheat_id] and not active[cheat_id]:
+                                continue  # The player switched this unlocked cheat off.
+                            bond = rdram_from_pointer(int.from_bytes(bonddata_bytes, "big"))
+                            writes = []
+                            guards = [(SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
+                                      (MISSION_ID_ADDRESS, reads[1], "RDRAM"),
+                                      (BONDDATA_pointer_ADDRESS, bonddata_bytes, "RDRAM"),
+                                      (STARTUP_READY_MAILBOX_ADDRESS, u32_bytes(0), "RDRAM"),
+                                      (CHEAT_APPLIED_ADDRESS, applied, "RDRAM"),
+                                      (CHEAT_REQUEST_ADDRESS, pending, "RDRAM"),
+                                      (CHEAT_AVAILABLE_ADDRESS, available, "RDRAM"),
+                                      (CHEAT_ACTIVE_ADDRESS, active, "RDRAM")]
+                            # 2. Weapon cheats keep a single entry alongside native duals.
+                            if "weapon_id" in effect:
+                                snapshot = await read_inventory_snapshot(ctx, bond)
+                                if "guards" not in snapshot:
+                                    return
+                                writes.extend(build_live_inventory_add_weapon_writes(snapshot, bond, effect["weapon_id"]))
+                                guards.extend(snapshot["guards"])
+                            # 3. The native frame applies the effect and clears this request.
+                            writes.extend([
+                                (CHEAT_AVAILABLE_ADDRESS + cheat_id, [1], "RDRAM"),
+                                (CHEAT_ACTIVE_ADDRESS + cheat_id, [1], "RDRAM"),
+                                (CHEAT_MODE_ADDRESS, u32_bytes(1), "RDRAM"),
+                                (CHEAT_REQUEST_ADDRESS, u32_bytes(mission_id << 8 | cheat_id), "RDRAM"),
+                            ])
+                            if await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, guards):
+                                logger.info("GoldenEye cheat activation requested: %s", effect["item_name"])
+                            break
+
+    ########################################
     # | Live weapons and loadout devices | #
-    ############################
+    ########################################
+
+                # 1. Consume native guard acquisitions separately from AP deliveries.
+                if (screen_id == SCREEN_GAMEPLAY and not bond_kia
+                    and self.last_startup_ready_mission == mission_id):
+                    guard_reads = await bizhawk.read(ctx.bizhawk_ctx, [
+                        (GUARD_AMMO_EVENTS_ADDRESS, 4, "RDRAM"),
+                        (SOLO_AMMO_MULTIPLIER_ADDRESS, 4, "RDRAM"),
+                    ])
+                    pickups = int.from_bytes(guard_reads[0], "big")
+                    if pickups:
+                        counts = count_received_items(ctx.items_received)
+                        owned = expand_progressive_weapons(counts, resolve_owned_weapons(counts))
+                        ammo_types = {}
+                        for item_id in owned:
+                            weapon = WEAPON_ITEM_DEFS[item_id]
+                            offset = weapon.get("ammo_offset")
+                            # Watch Laser is a device charge, not guard ammunition.
+                            if offset is not None and weapon["weapon_id"] != 23:
+                                ammo_types[offset] = weapon["ammo_max"]
+
+                        # 2. Award once per distinct ammunition type, with native difficulty scaling.
+                        multiplier = struct.unpack(">f", guard_reads[1])[0]
+                        configured_amount = int(client_data.GUARD_AMMO_BASE_AMOUNT * multiplier)
+                        bond = rdram_from_pointer(int.from_bytes(bonddata_bytes, "big"))
+                        ammo_reads = await bizhawk.read(ctx.bizhawk_ctx,
+                            [(bond + offset, 4, "RDRAM") for offset in ammo_types])
+                        writes = [(GUARD_AMMO_EVENTS_ADDRESS, u32_bytes(0), "RDRAM")]
+                        guards = [(GUARD_AMMO_EVENTS_ADDRESS, guard_reads[0], "RDRAM"),
+                                  (SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
+                                  (MISSION_ID_ADDRESS, reads[1], "RDRAM"),
+                                  (BONDDATA_pointer_ADDRESS, bonddata_bytes, "RDRAM")]
+                        for (offset, capacity), old_value in zip(ammo_types.items(), ammo_reads):
+                            amount = 1
+                            if offset == 0x1134:
+                                amount = configured_amount // 2
+                            elif offset == 0x113C:
+                                amount = configured_amount
+                            current = int.from_bytes(old_value, "big")
+                            desired = max(current, min(current + pickups * amount, capacity))
+                            writes.append((bond + offset, u32_bytes(desired), "RDRAM"))
+                            guards.append((bond + offset, old_value, "RDRAM"))
+                        # 3. A concurrent pickup leaves the counter intact for the next update.
+                        await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, guards)
 
                 current_items_received_count = len(ctx.items_received)
 
                 if self.previous_items_received_count is None:
                     self.previous_items_received_count = current_items_received_count
-                    logger.info("GoldenEye AP history ready count=%d", current_items_received_count)
+                    logger.debug("GoldenEye AP history ready count=%d", current_items_received_count)
 
                 elif current_items_received_count > self.previous_items_received_count and screen_id == SCREEN_GAMEPLAY:
                     previous_items = ctx.items_received[:self.previous_items_received_count]
@@ -1180,7 +1412,7 @@ class GoldeneyeClient(BizHawkClient):
                         live_weapon_item_id = None
 
                         effect = client_data.ITEM_EFFECT_DEFS.get(received_item_id)
-                        if effect is not None and effect["effect_type"] not in ("health_full", "armor_full", "ammo"):
+                        if effect is not None and effect["effect_type"] not in ("health_full", "armor_full", "ammo", "cheat"):
                             logger.error("GoldenEye unsupported received effect: %s (%s)", effect["item_name"], effect["effect_type"])
 
                         if received_item_id == PROGRESSIVE_GUN_BASE_ITEM_ID:
@@ -1191,7 +1423,7 @@ class GoldeneyeClient(BizHawkClient):
                             live_weapon_item_id = received_item_id
 
                         weapon_def = WEAPON_ITEM_DEFS.get(live_weapon_item_id)
-                        logger.info(
+                        logger.debug(
                             "GoldenEye ReceivedItems index=%d item_id=%d item_name=%s",
                             item_index,
                             received_item_id,
@@ -1326,7 +1558,7 @@ class GoldeneyeClient(BizHawkClient):
                             if old_objective_status != 1 and new_objective_status == 1:     # if the stored old objective flag offset is different now
                                 location_id = objective["location_id"]                      # Find that objective's location id
                                 if location_id not in self.local_checked_locations:         # local_checked_locations was initiated in validate_rom
-                                    if objective["requires_success"] is False:              # If the objective is marked false in client_data.py
+                                    if not objective["requires_success"] and not objective["requires_mission_end"]:
                                         self.local_checked_locations.add(location_id)       # Add it to checked locations list
                                         await ctx.send_msgs([{                              # Tell AP to send the location check
                                             "cmd": "LocationChecks",
@@ -1346,7 +1578,21 @@ class GoldeneyeClient(BizHawkClient):
                         if status != 1:                                                                               # if ANY of them are not complete
                             all_active_objectives = False                                                             # player has NOT finished every objective
 
-                    # 6. At a successful debrief, send the mission clear and its
+                    # 6. A living, non-aborted ending can satisfy casualties even
+                    # when another objective failed. Native debrief retains these flags.
+                    if screen_id == SCREEN_MISSION_DEBRIEF and not failed_or_aborted and not bond_kia:
+                        ending_locations = []
+                        for objective in active_objectives:
+                            flag_byte_offset = objective["flag_offset"] * 4
+                            status = int.from_bytes(objective_flags[flag_byte_offset:flag_byte_offset + 4], "big") & 0xFF
+                            if (objective["requires_mission_end"] and status == 1
+                                and objective["location_id"] not in self.local_checked_locations):
+                                ending_locations.append(objective["location_id"])
+                        if ending_locations:
+                            await ctx.send_msgs([{"cmd": "LocationChecks", "locations": ending_locations}])
+                            self.local_checked_locations.update(ending_locations)
+
+                    # 7. At a successful debrief, send the mission clear and its
                     # pending success-only objectives. Failed attempts clear the pending set.
 
                     if (screen_id == SCREEN_MISSION_DEBRIEF 
@@ -1357,6 +1603,18 @@ class GoldeneyeClient(BizHawkClient):
 
                         clear_location_id = get_active_clear_location_id(ctx, mission, difficulty_code)  # Get the mission clear location id
                         location_ids = [clear_location_id]                                               # Start a list of ids to send on success
+
+                        # AP cheat rewards remain valid equipment for timed checks.
+                        cheat_check = mission.get("cheat_unlock_check")
+                        if (cheat_shuffler and cheat_check and cheat_check["difficulty_code"] == difficulty_code
+                            and cheat_check["location_id"] in ctx.server_locations):
+                            timer_state = await bizhawk.read(ctx.bizhawk_ctx, [
+                                (MISSION_TIMER_ADDRESS, 4, "RDRAM"),
+                                (SCREEN_ID_ADDRESS, 4, "RDRAM"), (MISSION_ID_ADDRESS, 4, "RDRAM")])
+                            elapsed_ticks = int.from_bytes(timer_state[0], "big", signed=True)
+                            if (timer_state[1] == reads[0] and timer_state[2] == reads[1]
+                                and 0 <= elapsed_ticks // 60 <= cheat_check["time_seconds"]):
+                                location_ids.append(cheat_check["location_id"])
                 
                         for objective in active_objectives:
                             if objective["requires_success"] is True:                                    # Handle requires_success objectives like Minimize Casualties

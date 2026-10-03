@@ -55,5 +55,13 @@ IMPORTANT: Make sure you've put goldeneye_ap_randomizer.lua in C:\ProgramData\Ar
 
 ## Troubleshooting
 
+Received cheat items unlock their entries in the native cheat menu. Choose them
+before starting a mission; receiving one does not switch it on mid-mission.
+Cheat-unlock checks use the original mission, difficulty, and time limit and
+require a successful run with cheats off.
+
+Use the client, Lua script, and ROM patcher from the same generated package.
+Rebuild the ROM when the client reports an outdated pickup table or cheat menu.
+
 - If the client does not connect, make sure `goldeneye_ap_randomizer.lua` and `connector_bizhawk_generic.lua` are in the same folder.
 - If the world does not appear in Archipelago, confirm the `.apworld` is in `custom_worlds` and that `archipelago.json` is present inside the package.

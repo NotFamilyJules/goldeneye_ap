@@ -1,5 +1,6 @@
 from BaseClasses import Item, Tutorial
 from worlds.AutoWorld import WebWorld, World
+from worlds.generic.Rules import add_rule
 
 # Framework exception:
 # Archipelago expects this package file to wire together the BizHawk client
@@ -76,6 +77,15 @@ class GoldeneyeWorld(World):
 
     def set_rules(self) -> None:
         set_rules(self)
+        if self.options.goal.value == 1:
+            # Each enabled mission contributes one supported difficulty route.
+            clear_groups = [[location for location in self.multiworld.get_locations(self.player)
+                             if location.parent_region.name == mission_name and location.name.endswith("(Clear)")]
+                            for mission_name in MISSION_UNLOCK_NAMES
+                            if is_enabled_extra_region(self, mission_name)]
+            add_rule(self.multiworld.get_location("Stopped Goldeneye", self.player),
+                     lambda state: all(any(location.can_reach(state) for location in group)
+                                       for group in clear_groups))
 
     def create_items(self) -> None:
         self.multiworld.itempool.extend(create_itempool(self))
@@ -92,4 +102,13 @@ class GoldeneyeWorld(World):
         slot_data["Seed"] = self.multiworld.seed_name
         slot_data["Slot"] = self.multiworld.player_name[self.player]
         slot_data["TotalLocations"] = get_total_locations(self)
+        # 1. Publish the actual goal checks selected for this generated world.
+        goal_missions = MISSION_UNLOCK_NAMES if self.options.goal.value == 1 else ["Cradle"]
+        slot_data["goal_clear_groups"] = []
+        for mission_name in goal_missions:
+            clear_ids = [location.address for location in self.multiworld.get_locations(self.player)
+                         if location.parent_region.name == mission_name and location.name.endswith("(Clear)")]
+            if clear_ids:
+                slot_data["goal_clear_groups"].append(clear_ids)
+        slot_data["goal_location_id"] = self.location_name_to_id["Stopped Goldeneye"]
         return slot_data

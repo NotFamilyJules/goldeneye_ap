@@ -95,7 +95,70 @@ def update_n64_header_checksums(data: bytearray) -> tuple[int, int]:
 #################### Offset: ROM file offset (not a RAM address), the patcher writes directly at this byte. #####################
 #################################################################################################################################
 
+################################
+# | Cheat Shuffler: Native Hooks | #
+################################
+# frontCheckIfCheatIsUnlocked: menu unlocks come from AP, not the native save.
+# Selection and effect application remain native. Addresses are for the US ROM.
+CHEAT_MENU_PATCHES = [
+    (0x03E378, 0x248EFFFF, 0x3C088007),  # lui t0, 0x8007
+    (0x03E37C, 0x27BDFFE8, 0x01044021),  # addu t0, t0, a0
+    (0x03E380, 0x2DC1004A, 0x91029650),  # lbu v0, -0x69b0(t0)
+    (0x03E384, 0x102000B8, 0x03E00008),  # jr ra
+    (0x03E388, 0xAFBF0014, 0x00000000),  # nop
+]
+
+def patch_live_cheat_activation(patched):
+    # 1. Reuse the unreachable body of the replaced cheat-menu unlock getter.
+    start, end = 0x3E38C, 0x3E48C
+    if hashlib.sha256(patched[start:end]).hexdigest() != "9af21d803b029f00d1c0ab0406ac490d3724073b64fbc6161d904a8b4cd1361f":
+        raise SystemExit("Unexpected cheat activation helper space")
+    if read_u32_be(patched, 0xF4340) != 0x0FC2464F:
+        raise SystemExit("Unexpected player-frame cheat call")
+
+    # 2. Consume one client request: mission ID in the upper bytes, cheat ID below.
+    # Activate through the game's existing function, in its normal player frame.
+    words = [
+        0x3C088008,  # t0 = base for the AP mailbox
+        0x8D09F214,  # t1 = pending mission/cheat request (after the tank descriptor)
+        0x11200017,  # no request: continue normal button processing
+        0x00000000,  # branch delay
+        0xAD00F214,  # consume the request once
+        0x3C0A8003,  # t2 = base for screen and mission state
+        0x8D4BA8C0,  # t3 = current screen
+        0x240C000B,  # t4 = gameplay screen
+        0x156C0011,  # another screen: discard the stale request
+        0x00095A02,  # t3 = requested mission (request >> 8)
+        0x8D4CA8F8,  # t4 = current mission
+        0x156C000E,  # another mission: discard the stale request
+        0x312400FF,  # a0 = requested native cheat ID
+        0x27BDFFE8,  # reserve the native call frame
+        0xAFBF0014,  # save the caller's return address
+        0xAFA40010,  # save the requested cheat ID
+        0x0FC246AB,  # cheatButtonTurnOnCheatForPlayers(a0)
+        0x00000000,  # call delay
+        0x8FA90010,  # recover the cheat ID after native activation
+        0x3C088008,  # base for the native per-player active array
+        0x01094021,  # index that array by cheat ID
+        0x910A9E30,  # read the native active-player bits
+        0x354A0001,  # remember player one's activation, including weapon cheats
+        0xA10A9E30,  # native mission reset clears this alongside other effects
+        0x8FBF0014,  # restore the caller's return address
+        0x27BD0018,  # release the call frame
+        0x0BC2464F,  # continue the original cheat-button routine
+        0x00000000,  # jump delay
+    ]
+    for index, word in enumerate(words):
+        write_u32_be(patched, start + index * 4, word)
+    address = 0x7F000000 + start - 0x34B30
+    write_u32_be(patched, 0xF4340, 0x0C000000 | (address >> 2 & 0x3FFFFFF))
+
 PATCHES = [ # Edits to different stuff all around the code
+    # bg.c's 32-byte portal queue starts at 0x8007C100. Reserve its tail
+    # at the already-used AP mailbox base 0x8007F000: (F000-C100)/32=376.
+    # Both producer and consumer must wrap at that same boundary.
+    (0x0EC998, 0x240101F4, 0x24010178),
+    (0x0ECA80, 0x240101F4, 0x24010178),
     
     # Restore object_collectability_routines so native pickup path runs.
     (0x08521C, 0x0FC13803, 0x0FC13803),
@@ -124,7 +187,10 @@ PATCHES = [ # Edits to different stuff all around the code
 
     # collect_or_interact_object: skip native weapon/armor/inventory grants.
     (0x084F30, 0x0FC23122, 0x00000000),
-    (0x084F4C, 0x0FC17645, 0x00000000),
+    # This branch runs only for ITEM_TOKEN. Record native acquisition without
+    # equipping it; the existing Lua callback consumes this inventory entry.
+    (0x084F4C, 0x0FC17645, 0x0FC23122),
+    (0x084F50, 0x00002025, 0x24040058),
     (0x084F7C, 0x0FC231D9, 0x00001025),
     (0x084FD4, 0x0FC231D9, 0x00001025),
     (0x0850E4, 0x0FC228C3, 0x00000000),
@@ -146,7 +212,8 @@ PATCHES = [ # Edits to different stuff all around the code
 
 ]
 
-# Guard guns: 9mm only when the client publishes gun_pickup=2.
+# Guard guns: latch native acquisitions when gun_pickup=2. The client awards
+# each owned ammunition type separately from incoming AP deliveries.
 # In-place US collect_or_interact_object ammo block plus collectability wrapper.
 # Native acquisition NOPs above remain in force. See guard_ammo_report.md.
 GUARD_AMMO_PATCHES = [
@@ -163,19 +230,19 @@ GUARD_AMMO_PATCHES = [
     (0x085068, 0xAFA20034, 0x2D080021),  # sltiu t0, t0, 33: exclude mission items and AP token
     (0x08506C, 0x02002025, 0x1100000E),  # beqz t0, finish
     (0x085070, 0x0FC1A490, 0x00000000),  # nop
-    (0x085074, 0xAFA30068, 0x0FC1A490),  # jal check_cur_player_ammo_amount_in_inventory
-    (0x085078, 0xAFA20024, 0x24040001),  # li a0, 1: AMMO_9MM, regardless of dropped weapon
-    (0x08507C, 0x0FC1A4B5, 0xAFA20024),  # sw v0, 0x24(sp): current 9mm reserve
-    (0x085080, 0x02002025, 0x3C088003),  # lui t0, 0x8003
-    (0x085084, 0x8FAA0024, 0xC5000B28),  # lwc1 f0, 0xB28(t0): native g_SoloAmmoMultiplier
-    (0x085088, 0x8FA30068, 0x3C084120),  # lui t0, 0x4120: 10.0f
-    (0x08508C, 0x02002025, 0x44881000),  # mtc1 t0, f2
-    (0x085090, 0x0142082A, 0x46020002),  # mul.s f0, f0, f2
-    (0x085094, 0x50200044, 0x4600000D),  # trunc.w.s f0, f0
-    (0x085098, 0x24010001, 0x44080000),  # mfc1 t0, f0: 20 / 15 / 10 rounds
-    (0x08509C, 0x0FC1A490, 0x8FA50024),  # lw a1, 0x24(sp)
-    (0x0850A0, 0xAFA30068, 0x0FC1A44C),  # jal give_cur_player_ammo: native clamp to 800; a0 is still 1
-    (0x0850A4, 0x8FAB0034, 0x00A82821),  # addu a1, a1, t0
+    (0x085074, 0xAFA30068, 0x3C088008),  # lui t0, 0x8008
+    (0x085078, 0xAFA20024, 0x8D09F20C),  # lw t1, -0xDF4(t0): pending native pickups
+    (0x08507C, 0x0FC1A4B5, 0x25290001),  # addiu t1, t1, 1
+    (0x085080, 0x02002025, 0xAD09F20C),  # sw t1, -0xDF4(t0)
+    (0x085084, 0x8FAA0024, 0x10000008),  # branch to the unchanged removal path
+    (0x085088, 0x8FA30068, 0),
+    (0x08508C, 0x02002025, 0),
+    (0x085090, 0x0142082A, 0),
+    (0x085094, 0x50200044, 0),
+    (0x085098, 0x24010001, 0),
+    (0x08509C, 0x0FC1A490, 0),
+    (0x0850A0, 0xAFA30068, 0),
+    (0x0850A4, 0x8FAB0034, 0),
     (0x0850A8, 0x02002025, 0x1000003E),  # finish: b native removal path
     (0x0850AC, 0x0FC1A44C, 0x8FA30068),  # lw v1, 0x68(sp)
     (0x0850B0, 0x004B2821, 0x3C088008),  # collectability helper: lui t0, 0x8008
@@ -467,6 +534,181 @@ def patch_startup_weapon_grants(patched):
         write_u32_be(patched, start + index * 4, word)
 
 
+def patch_tank_entry(patched):
+    # 1. Reuse the unreachable remainder of the replaced guard-ammo award.
+    start = 0x8508C
+    if patched[start:0x850A8] != bytes(28):
+        raise SystemExit("Unexpected tank permission helper space")
+    # 2. Replace only g_BondCanEnterTank = 1 in bondviewCalcUpdatePlayerCollision.
+    # The original float subtraction and at register are retained by the helper.
+    expected = [0x240F0001, 0x3C018003, 0x46062201]
+    for index, word in enumerate(expected):
+        if read_u32_be(patched, 0xB260C + index * 4) != word:
+            raise SystemExit("Unexpected native tank-entry instructions")
+    helper = [0x3C0F8008, 0x91EFF20A, 0x3C018003, 0x03E00008, 0x46062201]
+    for index, word in enumerate(helper):
+        write_u32_be(patched, start + index * 4, word)
+    jump = 0x0C000000 | (((0x7F000000 + start - 0x34B30) >> 2) & 0x3FFFFFF)
+    for index, word in enumerate([jump, 0, 0]):
+        write_u32_be(patched, 0xB260C + index * 4, word)
+
+
+def patch_armor_locations(patched):
+    # 1. Use only the unreachable tail of the replaced mission-unlock getter.
+    # The live getter ends at 0x428C0; init_menu07 starts at 0x42980.
+    # This hash includes the existing difficulty patches in that unused tail.
+    start, end = 0x428C0, 0x42980
+    if hashlib.sha256(patched[start:end]).hexdigest() != "d170c9f14d5ad0fbbd879edbc2666c5e6a9815c5905913fb6d07498459176419":
+        raise SystemExit("Unexpected mission-unlock helper space")
+    if hashlib.sha256(patched[0x85100:0x85154]).hexdigest() != "51a6c3b60637ae8a0d125abef5f415c7a5828fe67029761b8202aca18e1fba48":
+        raise SystemExit("Unexpected suppressed armor text space")
+    for offset, expected in [(0x850E4, 0), (0x850E8, 0xC46C0084),
+                             (0x855A0, 0x1000001A), (0x855A4, 0xAFB9005C)]:
+        if read_u32_be(patched, offset) != expected:
+            raise SystemExit(f"Unexpected armor instruction at 0x{offset:X}")
+
+    def jump(offset, link=False):
+        return (0x0C000000 if link else 0x08000000) | (((0x7F000000 + offset - 0x34B30) >> 2) & 0x3FFFFFF)
+
+    # 2. Find this source in the existing packed descriptors. a0=object;
+    # v0=result bit, or zero. Only kind 4 with this exact model/pad matches.
+    # Read four bytes in their published little-endian order, then the nibble.
+    lookup = [
+        0x3C088008, 0x2508F150, 0x8D090074, 0x8C8B0004,
+        0x3C0C0C00, 0x016C5825, 0x00005025, 0x24020001,
+        0x11200016, 0x000A60C2, 0x01886021,
+        0x918D0003, 0x918E0002, 0x000D6A00, 0x01AE6825,
+        0x918E0001, 0x000D6A00, 0x01AE6825,
+        0x918E0000, 0x000D6A00, 0x01AE6825,
+        0x314E0007, 0x01CD6806, 0x000D6900, 0x000D6902,
+        0x116D0006, 0, 0x2529FFFF, 0x254A001C,
+        0x1000FFEA, 0x00021040,
+        0x00001025, 0x03E00008, 0,
+    ]
+    capacity = start + len(lookup) * 4
+    # 3. Run only when the original comparison rejects the pickup. Clear that
+    # rejection for an active source and continue the remaining native checks.
+    # The native function owns its return address; the object is saved at sp+60.
+    capacity_words = [
+        0x8FA40060, jump(start, True), 0,
+        0x14400003, 0, jump(0x8560C), 0,
+        0xAFA0005C, jump(0x855A8), 0,
+    ]
+    collection = 0x85108
+    # 4. The successful native armor branch supplies v1=collected object.
+    # Latch its check instead of its grant, then retain native sound and cleanup.
+    collection_words = [
+        0x27BDFFE8, 0xAFBF0014, 0x00602025, jump(start, True), 0,
+        0x8FBF0014, 0x10400007, 0x27BD0018,
+        0x3C088008, 0x8D09F1C0, 0x01224825, 0xAD09F1C0,
+        0x03E00008, 0, 0x0BC228C3, 0,  # unmatched: original armor grant
+    ]
+    words = lookup + capacity_words
+    assert start + len(words) * 4 <= end
+    for index, word in enumerate(words):
+        write_u32_be(patched, start + index * 4, word)
+    # Pickup text is already suppressed. Skip this helper after the original sound.
+    write_u32_be(patched, 0x85100, jump(0x85154))
+    write_u32_be(patched, 0x85104, 0)
+    for index, word in enumerate(collection_words):
+        write_u32_be(patched, collection + index * 4, word)
+    write_u32_be(patched, 0x855A0, jump(capacity))
+    write_u32_be(patched, 0x850E4, jump(collection, True))
+
+
+def patch_unrandomized_ammo_boxes(patched):
+    # 1. Verify the currently suppressed routine before restoring only its
+    # type-20 caller. Guard weapons and gun.c's grenade/knife calls keep suppression.
+    if hashlib.sha256(patched[0x845D8:0x8475C]).hexdigest() != "91ef0ab9490b56d925bd568365bd672b3b69654b3754968cd4c46c040f67cf2f":
+        raise SystemExit("Unexpected suppressed ammo instructions")
+
+    def jump(offset):
+        return 0x08000000 | (((0x7F000000 + offset - 0x34B30) >> 2) & 0x3FFFFFF)
+
+    # 2. Keep the original quantity/capacity checks and clamped ammo grant.
+    # sp+14 is add_ammo_to_inventory's saved caller. Only the MultiAmmoCrate
+    # loop returns to 7F0503AC. Reuse the already suppressed text block.
+    write_u32_be(patched, 0x845E8, jump(0x845F0))
+    words = [
+        0x8FA80014, 0x3C097F05, 0x352903AC,
+        0x15090004, 0, 0, 0x0FC1A44C, 0,
+    ]
+    for index, word in enumerate(words):
+        write_u32_be(patched, 0x845F0 + index * 4, word)
+
+    # 3. Gate the native implicit grenade/mine/knife grants by that same caller.
+    # All type-20 slots use ammo types 1..13. The higher mission-item cases stay
+    # unreachable, leaving room for this gate without moving or allocating code.
+    write_u32_be(patched, 0x84614, 0x51000003)  # no sound: still visit the gate
+    write_u32_be(patched, 0x84624, jump(0x846BC))
+    write_u32_be(patched, 0x84628, 0)
+    for offset in (0x84634, 0x84650, 0x84658, 0x84674, 0x84690, 0x846AC):
+        write_u32_be(patched, offset, 0x0FC23122)
+    write_u32_be(patched, 0x846A4, 0x5481002D)  # non-knife: native epilogue
+    words = [
+        0x8FA80014, 0x3C097F05, 0x352903AC,
+        0x15090024, 0x8FA40020, jump(0x8462C), 0x24010005,
+    ]
+    for index, word in enumerate(words):
+        write_u32_be(patched, 0x846BC + index * 4, word)
+
+    # 4. Loose magazines are only 0x84 bytes. Keep their native object intact.
+    # Reuse the same kind-4 descriptor lookup as armor. A matched acquisition
+    # records its bit and returns zero ammunition; unmatched magazines retain
+    # their original quantity path. This space is the gated-out item-ammo tail.
+    for offset, expected in [(0x84E44, 0x0FC13F0F), (0x854A8, 0x100000E9), (0x854AC, 0x00001025)]:
+        if read_u32_be(patched, offset) != expected:
+            raise SystemExit(f"Unexpected magazine instruction at 0x{offset:X}")
+    helper = 0x846D8
+    lookup_call = jump(0x428C0) | 0x04000000
+    words = [
+        0x27BDFFE8, 0xAFBF0014, 0xAFA40010, lookup_call, 0,
+        0x8FA40010, 0x8FBF0014, 0x10400007, 0x27BD0018,
+        0x3C088008, 0x8D09F1C0, 0x01224825, 0xAD09F1C0,
+        0x03E00008, 0x00001025, jump(0x8476C), 0,
+    ]
+    for index, word in enumerate(words):
+        write_u32_be(patched, helper + index * 4, word)
+    write_u32_be(patched, 0x84E44, jump(helper) | 0x04000000)
+
+    # 5. An active magazine check remains collectible at full ammunition.
+    # Continue the native distance/visibility checks after the capacity check.
+    capacity = helper + len(words) * 4
+    words = [0x8FA40074, lookup_call, 0, 0x10400003, 0,
+             jump(0x85620), 0, jump(0x85850), 0x00001025]
+    assert capacity + len(words) * 4 <= 0x8474C
+    for index, word in enumerate(words):
+        write_u32_be(patched, capacity + index * 4, word)
+    write_u32_be(patched, 0x854A8, jump(capacity))
+    write_u32_be(patched, 0x854AC, 0)
+
+    # 6. Keep multi-ammo crates at their native 0xB4-byte setup stride.
+    # A matched acquisition latches its check and skips the grant loop, then
+    # uses native sound/removal. Unmatched crates retain the original loop.
+    # Both callers already suppress pickup text; reuse the weapon text block.
+    if hashlib.sha256(patched[0x84FF8:0x85038]).hexdigest() != "991d28e1559366b5b06d1ef173c06ecf4905bd3095c344b6e4b8a3f6257d8cd3":
+        raise SystemExit("Unexpected suppressed weapon text space")
+    for offset, expected in [(0x84E68, 0x00001025), (0x84E6C, 0x00608025),
+                             (0x84FF0, 0x51C00011), (0x85560, 0x100000BB),
+                             (0x85564, 0x00001025)]:
+        if read_u32_be(patched, offset) != expected:
+            raise SystemExit(f"Unexpected ammo crate instruction at 0x{offset:X}")
+    collection = 0x84FF8
+    words = [lookup_call, 0, 0x10400007, 0x8FA3006C,
+             0x3C088008, 0x8D09F1C0, 0x01224825, 0xAD09F1C0,
+             jump(0x84EF0), 0, jump(0x84E70), 0x00608025]
+    for index, word in enumerate(words):
+        write_u32_be(patched, collection + index * 4, word)
+    write_u32_be(patched, 0x84FF0, jump(0x85038))
+    write_u32_be(patched, 0x84E68, jump(collection))
+    write_u32_be(patched, 0x84E6C, 0x00602025)  # a0=collected object
+
+    # 7. A full-ammo crate uses the same descriptor capacity check as magazines.
+    # The original destroyed-object and distance/visibility checks still run.
+    write_u32_be(patched, 0x85560, jump(capacity + 4))
+    write_u32_be(patched, 0x85564, 0x8FA40070)
+
+
 def build_output_rom(rom: bytes) -> bytes:
     patched = bytearray(rom)
 
@@ -481,7 +723,9 @@ def build_output_rom(rom: bytes) -> bytes:
         raise SystemExit("Unexpected alloc_additional_item_slots instruction")
     write_u32_be(patched, offset, 0x248E0000 | base_slots)
 
-    for offset, expected, replacement in PATCHES + KEY_ITEM_RECEIVE_PATCHES + GUARD_AMMO_PATCHES + KEY_WATCH_PATCHES: # Apply the above patches to the rom
+    cheat_patches = CHEAT_MENU_PATCHES if any(effect["effect_type"] == "cheat"
+                                            for effect in data["ITEM_EFFECT_DEFS"].values()) else []
+    for offset, expected, replacement in PATCHES + KEY_ITEM_RECEIVE_PATCHES + GUARD_AMMO_PATCHES + KEY_WATCH_PATCHES + cheat_patches:
         actual = read_u32_be(patched, offset)
         if actual != expected:
             raise SystemExit(
@@ -489,7 +733,11 @@ def build_output_rom(rom: bytes) -> bytes:
             )
         write_u32_be(patched, offset, replacement)
 
+    if cheat_patches:
+        patch_live_cheat_activation(patched)
+
     patch_key_watch_names(patched)
+    patch_tank_entry(patched)
     patch_semantic_object_ownership(patched)
     patch_native_handoff_feedback(patched)
 
@@ -520,6 +768,8 @@ def build_output_rom(rom: bytes) -> bytes:
         start = offset + (index * 4)
         patched[start:start + 4] = word.to_bytes(4, "big")
 
+    patch_armor_locations(patched)
+    patch_unrandomized_ammo_boxes(patched)
     update_n64_header_checksums(patched)
     return bytes(patched)
 

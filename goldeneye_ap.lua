@@ -65,6 +65,11 @@ function send_receive ()
                 end
             end
             response_list[i] = {type = "GUARD_RESPONSE", value = matches, address = data[i]["address"]}
+            -- A failed guard cancels the remaining commands in this request.
+            if not matches then
+                for pending = i + 1, #data do response_list[pending] = response_list[i] end
+                break
+            end
         elseif data[i]["type"] == "WRITE" then
             memory.write_bytes_as_array(data[i]["address"], base64.decode(data[i]["value"]), data[i]["domain"])
             response_list[i] = {type = "WRITE_RESPONSE"}
@@ -167,8 +172,11 @@ local KEY_ITEM_STATE_MAILBOX_ADDR = 0x7F204
 -- Freestanding Objects
 local FREESTANDING_RESULT_MAILBOX_ADDR = 0x7F1C0
 local FREESTANDING_TARGET_COUNT_ADDR = 0x7F1C4
-local FREESTANDING_TARGET_LIST_ADDR = 0x7F1C8
+local FREESTANDING_TARGET_LIST_ADDR = 0x7F150
 local FREESTANDING_TARGET_BITS = 28
+local TANK_OWNED_ADDR = 0x7F20A
+local TANK_DESCRIPTOR_ADDR = 0x7F210
+local tank_source = nil
 local ITEM_TOKEN = 88
 local INV_ITEM_NONE = -1
 local INV_ITEM_WEAPON = 1
@@ -324,40 +332,36 @@ local function clear_token_hand(bond_base)
     write_u32(bond_base + OFF_EQUIP_CUR, 0)
 end
 
-local function collected_at_player(bond_base, tracked)
-    local player_prop = to_rdram_ptr(read_u32(bond_base + 0xA8))
-    if player_prop == 0 then return false end
-    local dx = mainmemory.readfloat(tracked.prop + 0x08, true) - mainmemory.readfloat(player_prop + 0x08, true)
-    local dz = mainmemory.readfloat(tracked.prop + 0x10, true) - mainmemory.readfloat(player_prop + 0x10, true)
-    local destroyed = (read_u32(tracked.obj + 0x64) & 0x200) ~= 0
-    return not destroyed and dx * dx + dz * dz <= 250 * 250
-end
-
 local function rebuild_freestanding_targets()
     local count = read_u32(FREESTANDING_TARGET_COUNT_ADDR)
-    if count > 16 then count = 0 end
-    local parts = {tostring(count)}
+    if count > 32 then count = 0 end
+    -- 1. Read each packed byte once; unchanged descriptors need no decoding.
+    local packed_bytes = {}
+    for index = 0, math.ceil(count * FREESTANDING_TARGET_BITS / 8) - 1 do
+        packed_bytes[index + 1] = mainmemory.readbyte(FREESTANDING_TARGET_LIST_ADDR + index)
+    end
+    local signature = tostring(count) .. ":" .. table.concat(packed_bytes, ",")
+    if signature == freestanding_signature then return end
+    freestanding_signature = signature
+    -- 2. Decode only a newly published target list.
     local descriptors = {}
     for index = 0, count - 1 do
         local descriptor = 0
         for bit = 0, FREESTANDING_TARGET_BITS - 1 do
             local packed_bit = index * FREESTANDING_TARGET_BITS + bit
-            local byte = mainmemory.readbyte(FREESTANDING_TARGET_LIST_ADDR + math.floor(packed_bit / 8))
+            local byte = packed_bytes[math.floor(packed_bit / 8) + 1]
             descriptor = descriptor + math.floor(byte / (2 ^ (packed_bit % 8))) % 2 * (2 ^ bit)
         end
         descriptors[index + 1] = descriptor
-        parts[#parts + 1] = tostring(descriptor)
     end
-    local signature = table.concat(parts, ":")
-    if signature == freestanding_signature then return end
-    freestanding_signature = signature
     freestanding_targets = {}
     for index = 0, count - 1 do
         local descriptor = descriptors[index + 1]
         local target = {
             index=index,
             kind=math.floor(descriptor / 0x4000000) % 4 + 1,
-            model=math.floor(descriptor / 0x10000) % 0x400,
+            npc_weapon=math.floor(descriptor / 0x2000000) % 2 == 1,
+            model=math.floor(descriptor / 0x10000) % 0x200,
             pad=descriptor % 0x10000,
             objects={},
             bound=false,
@@ -373,27 +377,31 @@ local function bind_preplaced_freestanding_objects()
     end
     if all_bound then return end
 
-    for _, target in ipairs(freestanding_targets) do
-        if not target.bound then
-            for prop_index = 0, PROP_MAX - 1 do
-                local prop_ptr = PROP_POOL + prop_index * PROP_SIZE
-                local obj_ptr = to_rdram_ptr(read_u32(prop_ptr + PROP_OFF_OBJ))
-                local prop_type = mainmemory.readbyte(prop_ptr)
-                if obj_ptr > 0 and (prop_type == 1 or prop_type == 4)
-                    and to_rdram_ptr(read_u32(obj_ptr + OBJ_OFF_PROP)) == prop_ptr then
-                    local model_pad = read_u32(obj_ptr + 4)
-                    local model = math.floor(model_pad / 0x10000) % 0x10000
-                    local pad = model_pad % 0x10000
-                    local guard_gun = mainmemory.readbyte(obj_ptr + OBJ_OFF_TYPE) == 8
-                        and mainmemory.readbyte(obj_ptr + WEP_OFF_WEAPONNUM) < 33
-                        and (read_u32(obj_ptr + OBJ_OFF_FLAGS) & 0x4000) ~= 0
-                    if model == target.model and pad == target.pad and not guard_gun then
-                        target.objects[#target.objects + 1] = {obj=obj_ptr, prop=prop_ptr, was_live=false, collected=false}
-                    end
+    -- 1. Inspect each native prop once for all unresolved source identities.
+    for prop_index = 0, PROP_MAX - 1 do
+        local prop_ptr = PROP_POOL + prop_index * PROP_SIZE
+        local obj_ptr = to_rdram_ptr(read_u32(prop_ptr + PROP_OFF_OBJ))
+        local prop_type = mainmemory.readbyte(prop_ptr)
+        if obj_ptr > 0 and (prop_type == 1 or prop_type == 4)
+            and to_rdram_ptr(read_u32(obj_ptr + OBJ_OFF_PROP)) == prop_ptr then
+            local model_pad = read_u32(obj_ptr + 4)
+            local model = math.floor(model_pad / 0x10000) % 0x10000
+            local pad = model_pad % 0x10000
+            local weapon_number = mainmemory.readbyte(obj_ptr + WEP_OFF_WEAPONNUM)
+            local guard_gun = mainmemory.readbyte(obj_ptr + OBJ_OFF_TYPE) == 8
+                and (weapon_number < 33 or weapon_number == ITEM_TOKEN)
+                and (read_u32(obj_ptr + OBJ_OFF_FLAGS) & 0x4000) ~= 0
+            for _, target in ipairs(freestanding_targets) do
+                if not target.bound and model == target.model and pad == target.pad
+                    and guard_gun == target.npc_weapon then
+                    target.objects[#target.objects + 1] = {obj=obj_ptr, prop=prop_ptr, was_live=false, collected=false}
                 end
             end
-            if #target.objects > 0 then target.bound = true end
         end
+    end
+    -- 2. Finish binding after the scan so grouped sources keep every match.
+    for _, target in ipairs(freestanding_targets) do
+        if #target.objects > 0 then target.bound = true end
     end
 end
 
@@ -403,7 +411,40 @@ end
 -- 1 - Single weapon pickup; uses a token.	[Dam Sniper Rifle (code.gen line 512)]
 -- 2 - Key or mission item; tracks the actual object being collected.	[Runway Ignition Key (code.gen line 513)]
 -- 3 - Grouped weapon pickups sharing one location; uses tokens.	[Bunker 2’s six Throwing Knives (code.gen line 523)]
--- 4 - Ammo crate; converted into a collectible token weapon.	[Depot Proximity Mines (code.gen line 550)]
+-- 4 - Supplies: native type 21 armor uses the native acquisition hook;
+--     type 7 magazines also use native acquisition; type 20 boxes use tokens.
+
+local function update_tank_visibility()
+    -- 1. Bind only the generated mission tank, using its native type and source.
+    local descriptor = read_u32(TANK_DESCRIPTOR_ADDR)
+    if descriptor == 0 then return end
+    if tank_source == nil then
+        for index = 0, PROP_MAX - 1 do
+            local prop = PROP_POOL + index * PROP_SIZE
+            local obj = to_rdram_ptr(read_u32(prop + PROP_OFF_OBJ))
+            if obj > 0 and mainmemory.readbyte(obj + OBJ_OFF_TYPE) == 45
+                and read_u32(obj + 4) == descriptor
+                and to_rdram_ptr(read_u32(obj + OBJ_OFF_PROP)) == prop then
+                tank_source = {obj=obj, prop=prop, enabled=mainmemory.readbyte(prop + 1) & 4}
+                break
+            end
+        end
+    end
+    if tank_source == nil then return end
+    -- 2. Validate the native pair before touching the live prop's enable bit.
+    local obj, prop = tank_source.obj, tank_source.prop
+    if to_rdram_ptr(read_u32(obj + OBJ_OFF_PROP)) ~= prop
+        or to_rdram_ptr(read_u32(prop + PROP_OFF_OBJ)) ~= obj then
+        tank_source = nil
+        return
+    end
+    -- chrpropDisable/Enable use prop.flags bit 4; the native render list requires it.
+    -- Entry is independently gated at g_BondCanEnterTank in the ROM patch.
+    local flags = mainmemory.readbyte(prop + 1)
+    local enabled = mainmemory.readbyte(TANK_OWNED_ADDR) == 1 and tank_source.enabled or 0
+    local desired = (flags & (~4)) | enabled
+    if flags ~= desired then mainmemory.writebyte(prop + 1, desired) end
+end
 
  local function update_freestanding_pickups(bond_base)
     rebuild_freestanding_targets()
@@ -422,23 +463,12 @@ end
             if tracked.obj > 0 then
                 if live_prop > 0 then
 
-                    -- If the object is a weapon or a multi-ammo crate, and the prop is on-screen, equip it with the ITEM_TOKEN and enable proxy collection.
+                    -- Native armor and ammunition hooks retain their object layouts.
+                    -- Only weapon sources use the temporary inventory token.
 
-                    if (target.kind == 1 or target.kind == 3) and prop_is_onscreen(live_prop) then
-                        mainmemory.writebyte(tracked.obj + WEP_OFF_WEAPONNUM, ITEM_TOKEN)
-                        enable_proxy_collection(tracked.obj)
-                        tracked.was_live = true
-                    elseif target.kind == 4 and prop_is_onscreen(live_prop) then
-                        -- MultiAmmoCrate is 0xB4 bytes; WeaponObjRecord is 0x88.
-                        -- Keep the shared 0x80-byte ObjectRecord intact. Native
-                        -- collection/free reads linked type, timer and dualweapon.
-                        -- Use the native unlinked weapon defaults before publishing
-                        -- type 8, within this callback without a frame advance.
-                        if mainmemory.readbyte(tracked.obj + OBJ_OFF_TYPE) == 20 then
-                            write_u32(tracked.obj + 0x80, ITEM_TOKEN * 0x1000000 + 0xFFFFFF)
-                            write_u32(tracked.obj + 0x84, 0)
-                        end
-                        mainmemory.writebyte(tracked.obj + OBJ_OFF_TYPE, 8)
+                    if (target.kind == 1 or target.kind == 3) and prop_is_onscreen(live_prop)
+                        and (not target.npc_weapon or read_u32(live_prop + 0x1C) == 0) then
+                        -- A configured NPC keeps its weapon until it drops it normally.
                         mainmemory.writebyte(tracked.obj + WEP_OFF_WEAPONNUM, ITEM_TOKEN)
                         enable_proxy_collection(tracked.obj)
                         tracked.was_live = true
@@ -464,7 +494,7 @@ end
                         tracked.collected = true
                     end
                 elseif tracked.was_live and live_prop == 0
-                    and (token_entry or token_in_hand or collected_at_player(bond_base, tracked)) then
+                    and (token_entry or token_in_hand) then
                     set_result_bit(target.index)
                     tracked.was_live = false
                 end
@@ -485,12 +515,16 @@ event.onframestart(function()
         reset_state()
         freestanding_targets = {}
         freestanding_signature = ""
+        tank_source = nil
         if screen_id == SCREEN_GAMEPLAY and mission_id ~= 0 and bond_base > 0 then
             write_u32(STARTUP_READY_MAILBOX_ADDR, 0)
             write_u32(FREESTANDING_RESULT_MAILBOX_ADDR, 0)
             write_u32(KEY_ITEM_FLAGS_MAILBOX_ADDR, 0)
             write_u32(KEY_ITEM_STATE_MAILBOX_ADDR, 0)
             mainmemory.writebyte(0x7F209, 0) -- Native item acquisition stays disabled until slot options arrive.
+            write_u32(0x7F20C, 0) -- Guard ammunition acquisitions belong only to this attempt.
+            mainmemory.writebyte(TANK_OWNED_ADDR, 0)
+            write_u32(TANK_DESCRIPTOR_ADDR, 0)
         end
     end
 
@@ -523,6 +557,7 @@ event.onframestart(function()
     end
 
     -- Pickup inventory evidence is transient, so consume it before the game frame.
+    update_tank_visibility()
     update_freestanding_pickups(bond_base)
     last_timer_ec = timer_ec
 end)

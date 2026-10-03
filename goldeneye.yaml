@@ -13,27 +13,8 @@ GoldenEye 007:
 
   # Starting Mission
   # Which mission starts unlocked
-  starting_mission:
-    dam: 50
-    facility: 0
-    runway: 0
-    surface_1: 0
-    bunker_1: 0
-    silo: 0
-    frigate: 0
-    surface_2: 0
-    bunker_2: 0
-    statue: 0
-    archives: 0
-    streets: 0
-    depot: 0
-    train: 0
-    jungle: 0
-    control: 0
-    caverns: 0
-    cradle: 0
-    aztec: 0
-    egyptian: 0
+  # Choices: Random, dam, facility, runway, surface_1, bunker_1, silo, frigate, surface_2, bunker_2, statue, archives, streets, depot, train, jungle, control, caverns, cradle, aztec, egyptian
+  starting_mission: random
 
   # Add Extra Levels
   # Enable Aztec, Egyptian, or both
@@ -50,7 +31,7 @@ GoldenEye 007:
     shared: 50
 
   # Shuffle Items
-  # Choose for items to be shuffled. While freestanding guns will be checks, freestanding objective objects will be unattainable, NPC dropped items, and NPC handoff items will not be attainable until unlocked. Loadout items will be available at the start of the mission only if unlocked.
+  # Choose for freestanding, NPC Drops and Handoffs, and Key items to be shuffled.
   item_shuffle:
     per_difficulty: 0
     shared: 50
@@ -75,6 +56,18 @@ GoldenEye 007:
     'false': 0
     'true': 50
 
+  # Body Armor Sanity
+  # Body armor locations send checks
+  body_armor_sanity:
+    'false': 50
+    'true': 0
+
+  # Ammo Crate Sanity
+  # Ammo Crate locations send checks
+  ammo_crate_sanity:
+    'false': 50
+    'true': 0
+
   # DeathLink
   # When Bond dies you die in real life
   death_link:
@@ -91,13 +84,15 @@ GoldenEye 007:
     'false': 50
     'true': 0
 
-  # Enemy Rockets Trap
-  # Weight of enemy rockets trap
-  enemy_rockets_trap: 100
-
   # Holster Gun Trap
   # Weight of holster gun trap
   holster_gun_trap: 25
+
+  # Cheats Shuffler
+  # Cheat Unlock level speedruns are now locations for checks, and cheats are now items in the pool that will automatically enable.
+  cheat_shuffler:
+    'false': 50
+    'true': 0
 
   progression_balancing:
     normal: 50
