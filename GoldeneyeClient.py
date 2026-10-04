@@ -90,7 +90,7 @@ import worlds._bizhawk as bizhawk
 import logging
 import json
 import struct
-from Utils import persistent_load, persistent_store
+from Utils import async_start, persistent_load, persistent_store
 from NetUtils import ClientStatus
 from . import client_data
 from worlds._bizhawk.client import BizHawkClient
@@ -110,6 +110,7 @@ MISSION_ID_ADDRESS = 0x2A8F8
 DIFFICULTY_ADDRESS = 0x2A8FC
 UNLOCK_BASE_ADDRESS = 0x7F000
 GUN_PICKUP_OPTION_ADDRESS = 0x7F208
+SKIP_MISSION_INTROS_ADDRESS = 0x7F20B
 NATIVE_ITEM_PICKUP_OPTION_ADDRESS = 0x7F209
 GUARD_AMMO_EVENTS_ADDRESS = 0x7F20C
 SOLO_AMMO_MULTIPLIER_ADDRESS = 0x30B28
@@ -151,6 +152,11 @@ INV_ITEM_AP_KEY = 0x10001
 INV_ITEM_AP_SPENT = 0x10000  # Retain semantic receipt until the stage pool is reset; hidden from watch.
 INV_ITEM_SIZE = 0x14
 ITEM_SLAPPERS = 1
+ATTEMPT_ADDRESS = 0x7F218
+DEATH_REQUEST_ADDRESS = 0x7F21C
+INCOMING_DEATH_ADDRESS = 0x7F220
+CAMERA_MODE_ADDRESS = 0x36494
+GOLDENEYE_TRAP_ADDRESS = 0x36444
 
 #   Key Item Receive Constants #
 
@@ -951,6 +957,101 @@ class GoldeneyeClient(BizHawkClient):
     system = "N64"
     patch_suffix = ".apge"
 
+    async def read_mission_state(self, ctx):
+        # 1. Read the native attempt, camera and player together.
+        addresses = [ATTEMPT_ADDRESS, SCREEN_ID_ADDRESS, MISSION_ID_ADDRESS,
+                     CAMERA_MODE_ADDRESS, BONDDATA_pointer_ADDRESS, INCOMING_DEATH_ADDRESS]
+        values = await bizhawk.read(ctx.bizhawk_ctx, [(address, 4, "RDRAM") for address in addresses])
+        attempt, screen, mission, camera, pointer, incoming = [int.from_bytes(value, "big") for value in values]
+        bond = to_rdram_ptr(pointer)
+        guards = [(address, value, "RDRAM") for address, value in zip(addresses, values)]
+        state = {"attempt": attempt, "bond": bond, "living": False, "dead": False,
+                 "incoming": incoming, "guards": guards}
+        if screen != SCREEN_GAMEPLAY or mission not in MISSION_BY_ID or not 0 < bond < 0x800000 - 0x2A80:
+            return state
+        # 2. The watch keeps the native in-mission camera and player prop.
+        prop, dead = await bizhawk.read(ctx.bizhawk_ctx, [(bond + 0xA8, 4, "RDRAM"), (bond + 0xD8, 4, "RDRAM")])
+        guards.extend([(bond + 0xA8, prop, "RDRAM"), (bond + 0xD8, dead, "RDRAM")])
+        state["dead"] = bool(int.from_bytes(dead, "big"))
+        state["living"] = camera == 4 and bool(to_rdram_ptr(int.from_bytes(prop, "big"))) and not state["dead"]
+        return state
+
+    def on_package(self, ctx, cmd, args):
+        if cmd == "ReceivedItems" and args["index"] > 0:
+            for index in range(args["index"], args["index"] + len(args["items"])):
+                self.trap_attempts[index] = self.live_attempt
+        # 1. Standard BizHawk networking dispatches server-relayed DeathLink here.
+        if (cmd == "Bounced" and "DeathLink" in args.get("tags", [])
+            and ctx.slot_data and ctx.slot_data["options"].get("death_link", 0)
+            and args["data"]["source"] != ctx.player_names[ctx.slot]):
+            async_start(self.receive_deathlink(ctx, self.live_attempt))
+
+    async def receive_deathlink(self, ctx, attempt):
+        # 2. Never retain an event for a different attempt or a later living state.
+        state = await self.read_mission_state(ctx)
+        if (attempt is None or not state["living"] or state["attempt"] != attempt
+            or not ctx.slot_data["options"].get("death_link", 0)):
+            logger.info("GoldenEye DeathLink ignored outside a living attempt")
+            return
+        await bizhawk.guarded_write(ctx.bizhawk_ctx,
+            [(DEATH_REQUEST_ADDRESS, u32_bytes(attempt), "RDRAM")], state["guards"])
+
+    async def update_deathlink(self, ctx):
+        # 1. Use the installed client's standard tag and send hooks.
+        enabled = bool(ctx.slot_data["options"].get("death_link", 0))
+        await ctx.update_death_link(enabled)
+        state = await self.read_mission_state(ctx)
+        if not enabled and state["living"]:
+            await bizhawk.guarded_write(ctx.bizhawk_ctx,
+                [(DEATH_REQUEST_ADDRESS, u32_bytes(0), "RDRAM")], state["guards"])
+        # 2. Arm once per living attempt; native KIA, not a menu, reports death.
+        self.live_attempt = state["attempt"] if state["living"] else None
+        if state["living"] and self.death_attempt != state["attempt"]:
+            self.death_attempt = state["attempt"]
+            self.death_handled = False
+        if state["dead"] and self.death_attempt == state["attempt"] and not self.death_handled:
+            self.death_handled = True
+            if enabled and state["incoming"] != state["attempt"]:
+                await ctx.send_death(f"{ctx.player_names[ctx.slot]}'s Bond died.")
+        return state
+
+    async def receive_traps(self, ctx, state):
+        # 1. Reuse indexed delivery storage, with a cursor for nondeferred effects.
+        key = json.dumps([ctx.server_seed_name, ctx.team, ctx.slot, "traps"])
+        cursor = persistent_load().get("goldeneye_refills", {}).get(key, 0)
+        deliveries = tuple(ctx.items_received)
+        for index in range(cursor, len(deliveries)):
+            effect = client_data.ITEM_EFFECT_DEFS.get(deliveries[index].item)
+            attempt = self.trap_attempts.pop(index, None)
+            if effect is None or effect["effect_type"] not in ("goldeneye_trap", "holster_gun_trap"):
+                continue
+            # 2. History and out-of-level receipts are consumed, never queued.
+            if state["living"] and attempt == state["attempt"]:
+                if effect["effect_type"] == "goldeneye_trap":
+                    writes = [(GOLDENEYE_TRAP_ADDRESS, bytes([1]), "RDRAM")]
+                else:
+                    # Native currentPlayerEquipWeaponWrapper: animation, next, trigger.
+                    # Replace a pending draw too, retaining magazines and inventory.
+                    writes = []
+                    for hand, weapon in ((0x870, ITEM_SLAPPERS), (0xC18, 0)):
+                        base = state["bond"] + hand
+                        current, pending = await bizhawk.read(ctx.bizhawk_ctx,
+                            [(base, 4, "RDRAM"), (base + 0x3C, 4, "RDRAM")])
+                        if int.from_bytes(current, "big") == weapon and int.from_bytes(pending, "big") == weapon:
+                            continue
+                        writes.extend([(base + 0x28, u32_bytes(5), "RDRAM"),
+                                       (base + 0x3C, u32_bytes(weapon), "RDRAM"),
+                                       (base + 0x44, u32_bytes(0), "RDRAM")])
+                applied = await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, state["guards"])
+                logger.info("GoldenEye trap index=%d %s: %s", index, effect["item_name"], "applied" if applied else "transition ignored")
+            else:
+                logger.info("GoldenEye trap index=%d %s: history/outside mission ignored", index, effect["item_name"])
+        # 3. Reconnect can replay the item list without replaying its effects.
+        if cursor < len(deliveries):
+            persistent_store("goldeneye_refills", key, len(deliveries))
+        self.trap_attempts = {index: attempt for index, attempt in self.trap_attempts.items()
+                              if index >= max(cursor, len(deliveries))}
+
     async def validate_rom(self, ctx):
         try:
             title = bytes((await bizhawk.read(ctx.bizhawk_ctx, [(0x20, 20, "ROM")]))[0]).decode(
@@ -974,7 +1075,7 @@ class GoldeneyeClient(BizHawkClient):
             signatures = await bizhawk.read(ctx.bizhawk_ctx, [(0x03E378, 20, "ROM"),
                 (0xF4340, 4, "ROM"), (0x3E390, 4, "ROM")])
             if [bytes(value) for value in signatures] != [bytes.fromhex("3c088007010440219102965003e0000800000000"),
-                bytes.fromhex("0fc02617"), bytes.fromhex("8d09f214")]:
+                bytes.fromhex("0fc02657"), bytes.fromhex("8d09f214")]:
                 logger.error("Rebuild the ROM with this package's patcher; automatic cheat activation requires its native hook.")
                 return False
         
@@ -996,6 +1097,10 @@ class GoldeneyeClient(BizHawkClient):
 
         self.previous_items_received_count = None   # keep track of how many AP items we've already handled for live receives
         self.previous_server_checked_locations = None
+        self.live_attempt = None
+        self.death_attempt = None
+        self.death_handled = False
+        self.trap_attempts = {}
 
         return True
 
@@ -1006,6 +1111,9 @@ class GoldeneyeClient(BizHawkClient):
             return
 
         try:
+
+            mission_state = await self.update_deathlink(ctx)
+            await self.receive_traps(ctx, mission_state)
 
             # Sync checked locations from AP
             # update self.local_checked_locations from ctx.locations_checked or ctx.checked_locations so reconnects dont resend old checks
@@ -1032,7 +1140,7 @@ class GoldeneyeClient(BizHawkClient):
 
             server_checked_locations = sorted(int(location_id) for location_id in (checked_locations or []))
             if server_checked_locations != self.previous_server_checked_locations:
-                logger.debug("GoldenEye server checked locations=%s", server_checked_locations)
+                # logger.debug("GoldenEye server checked locations=%s", server_checked_locations)
                 self.previous_server_checked_locations = server_checked_locations
 
             # Get the starting mission from slot_data and build the unlock block
@@ -1067,10 +1175,12 @@ class GoldeneyeClient(BizHawkClient):
             mission = MISSION_BY_ID.get(mission_id)
 
             if screen_id == SCREEN_GAMEPLAY and mission is not None:
+                # Publish intro skipping before loadout readiness, which needs native hand ticks.
                 tank = client_data.TANKS_BY_MISSION_NAME.get(mission["name"])
                 tank_owned = tank is not None and any(item.item == tank["ap_item_id"] for item in ctx.items_received)
                 tank_descriptor = (tank["model"] << 16) | tank["pad"] if tank else 0
                 await bizhawk.guarded_write(ctx.bizhawk_ctx, [
+                    (SKIP_MISSION_INTROS_ADDRESS, bytes([int(ctx.slot_data["options"].get("skip_cutscenes", 0))]), "RDRAM"),
                     (GUN_PICKUP_OPTION_ADDRESS, bytes([ctx.slot_data["options"]["gun_pickup"]]), "RDRAM"),
                     (NATIVE_ITEM_PICKUP_OPTION_ADDRESS, bytes([int(ctx.slot_data["options"]["item_shuffle"] == 3)]), "RDRAM"),
                     (TANK_OWNED_ADDRESS, bytes([int(tank_owned)]), "RDRAM"),
@@ -1149,7 +1259,6 @@ class GoldeneyeClient(BizHawkClient):
                                         (CHEAT_MODE_ADDRESS, cheat_state[1], "RDRAM")]
 
                     current_startup_ids = []
-                    desired_startup_ids = []
                     
                     bonddata_reads = await bizhawk.read(ctx.bizhawk_ctx, [(BONDDATA_pointer_ADDRESS, 4, "RDRAM")])      # read live bonddata pointer
                     int_pointer = int.from_bytes(bonddata_reads[0], "big")                                              # convert the FIRST instance to int
@@ -1163,27 +1272,6 @@ class GoldeneyeClient(BizHawkClient):
                     gadget_ids = build_mission_start_gadget_ids(mission, counts)                                        # build up gadget ids from current mission and counts
                     startup_entries = build_startup_inventory_entries(loadout, gadget_ids, snapshot["max_items"], selected_cheats)
 
-                    for entry in startup_entries:
-                        desired_startup_ids.append(entry["weapon_id"])
-
-                    missing_startup_ids = []                            # ids of guns/items the player doesn't currently have
-                    extra_startup_ids = []                              # ids of items currently present but not desired
-
-                    for desired_id in desired_startup_ids:              # track missing ids
-                        if desired_id not in current_startup_ids:
-                            missing_startup_ids.append(desired_id)
-
-                    for current_startup_id in current_startup_ids:
-                        if current_startup_id not in desired_startup_ids and current_startup_id != 1:
-                            extra_startup_ids.append(current_startup_id)                                            # track it in extra_startup_ids
-                                    
-                    # Debug loggers to check startup lists
-                    # logger.info(f"mission: {mission['name']}")                     # mission = Current Mission
-                    # logger.info(f"current_startup: {current_startup_ids}")         # current_startup_ids = Vanilla Startup
-                    # logger.info(f"desired_startup: {desired_startup_ids}")         # desired_startup_ids = What the startup should be
-                    # logger.info(f"missing_startup: {missing_startup_ids}")         # missing_startup_ids = Items that need to be written
-                    # logger.info(f"extra_startup: {extra_startup_ids}")             # extra_startup_ids = Items should be removed
-                    
                     startup_writes = build_startup_inventory_writes(snapshot, startup_entries, bonddata_pointer,
                         all_guns=any(effect.get("all_guns") for effect in selected_cheats))
                     # 1. Reconstruct ammunition once, after native startup resets.
@@ -1395,7 +1483,7 @@ class GoldeneyeClient(BizHawkClient):
 
                 if self.previous_items_received_count is None:
                     self.previous_items_received_count = current_items_received_count
-                    logger.debug("GoldenEye AP history ready count=%d", current_items_received_count)
+                    # logger.debug("GoldenEye AP history ready count=%d", current_items_received_count)
 
                 elif current_items_received_count > self.previous_items_received_count and screen_id == SCREEN_GAMEPLAY:
                     previous_items = ctx.items_received[:self.previous_items_received_count]
@@ -1412,7 +1500,7 @@ class GoldeneyeClient(BizHawkClient):
                         live_weapon_item_id = None
 
                         effect = client_data.ITEM_EFFECT_DEFS.get(received_item_id)
-                        if effect is not None and effect["effect_type"] not in ("health_full", "armor_full", "ammo", "cheat"):
+                        if effect is not None and effect["effect_type"] not in ("health_full", "armor_full", "ammo", "cheat", "goldeneye_trap", "holster_gun_trap"):
                             logger.error("GoldenEye unsupported received effect: %s (%s)", effect["item_name"], effect["effect_type"])
 
                         if received_item_id == PROGRESSIVE_GUN_BASE_ITEM_ID:
@@ -1423,12 +1511,12 @@ class GoldeneyeClient(BizHawkClient):
                             live_weapon_item_id = received_item_id
 
                         weapon_def = WEAPON_ITEM_DEFS.get(live_weapon_item_id)
-                        logger.debug(
-                            "GoldenEye ReceivedItems index=%d item_id=%d item_name=%s",
-                            item_index,
-                            received_item_id,
-                            weapon_def["item_name"] if weapon_def is not None else "non-weapon",
-                        )
+                        # logger.debug(
+                        #     "GoldenEye ReceivedItems index=%d item_id=%d item_name=%s",
+                        #     item_index,
+                        #     received_item_id,
+                        #     weapon_def["item_name"] if weapon_def is not None else "non-weapon",
+                        # )
 
                         if live_weapon_item_id is not None:
                             live_writes = await build_live_weapon_receive_writes(ctx, bonddata_pointer, live_weapon_item_id)

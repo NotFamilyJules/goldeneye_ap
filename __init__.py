@@ -1,4 +1,6 @@
-from BaseClasses import Item, Tutorial
+import logging
+
+from BaseClasses import CollectionState, Item, Tutorial
 from worlds.AutoWorld import WebWorld, World
 from worlds.generic.Rules import add_rule
 
@@ -10,7 +12,7 @@ from worlds.generic.Rules import add_rule
 # This is safe because it only connects pieces that already live in this
 # package and does not add gameplay logic of its own.
 from .GoldeneyeClient import GoldeneyeClient
-from .Items import MISSION_UNLOCK_NAMES, create_item, create_itempool, item_table
+from .Items import MISSION_UNLOCK_NAMES, create_item, create_itempool, create_junk_items, item_table
 from .Locations import get_location_names, get_total_locations, is_enabled_extra_region
 from .Options import GoldeneyeOptions, create_option_groups
 from .Regions import create_regions
@@ -58,8 +60,9 @@ class GoldeneyeWorld(World):
     web = GoldeneyeWeb()
 
     def generate_early(self) -> None:
-        # 1. Resolve Random once, using only missions enabled for this world.
-        if self.options.starting_mission.value == self.options.starting_mission.random_value:
+        # 1. Choose an enabled start; check its access after rules are installed.
+        self.random_start = self.options.starting_mission.value == self.options.starting_mission.random_value
+        if self.random_start:
             eligible_missions = [
                 mission_id
                 for mission_id, mission_name in enumerate(MISSION_UNLOCK_NAMES, start=1)
@@ -68,9 +71,8 @@ class GoldeneyeWorld(World):
             self.options.starting_mission.value = self.random.choice(eligible_missions)
 
         # 2. Give the resolved mission its normal starting unlock.
-        self.multiworld.push_precollected(
-            self.create_item(MISSION_UNLOCK_NAMES[self.options.starting_mission.value - 1])
-        )
+        self.starting_unlock = self.create_item(MISSION_UNLOCK_NAMES[self.options.starting_mission.value - 1])
+        self.multiworld.push_precollected(self.starting_unlock)
 
     def create_regions(self) -> None:
         create_regions(self)
@@ -86,6 +88,52 @@ class GoldeneyeWorld(World):
             add_rule(self.multiworld.get_location("Stopped Goldeneye", self.player),
                      lambda state: all(any(location.can_reach(state) for location in group)
                                        for group in clear_groups))
+        self.resolve_starting_mission()
+
+    def resolve_starting_mission(self) -> None:
+        # 1. Test actual starting inventory and enabled, non-excluded checks.
+        initial_mission = self.options.starting_mission.value
+        remaining = [mission_id for mission_id, name in enumerate(MISSION_UNLOCK_NAMES, start=1)
+                     if mission_id != initial_mission and is_enabled_extra_region(self, name)]
+        locations = [location for location in self.multiworld.get_unfilled_locations(self.player)
+                     if location.name not in self.options.exclude_locations.value]
+        progression = [item for item in self.multiworld.itempool if item.advancement and item.player == self.player]
+        starting_state = CollectionState(self.multiworld)
+        starting_state.remove(self.starting_unlock)
+        mission_id = initial_mission
+        while True:
+            mission_name = MISSION_UNLOCK_NAMES[mission_id - 1]
+            candidate_unlock = self.create_item(mission_name)
+            candidate_state = starting_state.copy()
+            candidate_state.collect(candidate_unlock, True)
+            reachable = [location for location in locations if location.can_reach(candidate_state)
+                         and any(location.can_fill(candidate_state, item) for item in progression)]
+            if is_enabled_extra_region(self, mission_name) and reachable:
+                break
+            # 2. Never retry a rejected mission or reroll the placement seed.
+            if not remaining:
+                raise ValueError("GoldenEye: no enabled starting mission has a reachable progression check.")
+            mission_id = self.random.choice(remaining)
+            remaining.remove(mission_id)
+
+        # 3. Exchange only the normal starting unlock, keeping pool size unchanged.
+        if mission_id != initial_mission:
+            pool_unlock = next(item for item in self.multiworld.itempool
+                               if item.player == self.player and item.name == mission_name)
+            replacement = (self.starting_unlock if is_enabled_extra_region(self, self.starting_unlock.name)
+                           else create_junk_items(self, 1)[0])
+            self.multiworld.itempool[self.multiworld.itempool.index(pool_unlock)] = replacement
+            self.multiworld.precollected_items[self.player].remove(self.starting_unlock)
+            self.multiworld.state.remove(self.starting_unlock)
+            self.multiworld.push_precollected(pool_unlock)
+            self.options.starting_mission.value = mission_id
+            if not self.random_start:
+                reason = ("no reachable progression checks" if is_enabled_extra_region(self, self.starting_unlock.name)
+                          else "mission disabled by extra_locations")
+                logging.warning("GoldenEye player %s: explicit start %s is unavailable (%s); "
+                                "randomly selected %s instead (%s reachable progression checks).",
+                                self.player, self.starting_unlock.name, reason, mission_name, len(reachable))
+            self.starting_unlock = pool_unlock
 
     def create_items(self) -> None:
         self.multiworld.itempool.extend(create_itempool(self))

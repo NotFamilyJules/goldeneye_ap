@@ -55,6 +55,14 @@ IMPORTANT: Make sure you've put goldeneye_ap_randomizer.lua in C:\ProgramData\Ar
 
 ## Troubleshooting
 
+To skip mission openings, set `skip_cutscenes: true` under `GoldenEye 007:` in
+your local player YAML before generating a new session. It defaults to false.
+Use the updated ROM, client, and Lua script together. This option requests the
+native opening-camera and Bond-animation skips, including their normal fades.
+It also applies to retries. Endings, deaths, dialogue, objective scenes, and
+native mission timing are unchanged. Keep recorded TAS sessions on their
+recorded setting; existing fixtures use false.
+
 Received cheat items unlock their entries in the native cheat menu. Choose them
 before starting a mission; receiving one does not switch it on mid-mission.
 Cheat-unlock checks use the original mission, difficulty, and time limit and

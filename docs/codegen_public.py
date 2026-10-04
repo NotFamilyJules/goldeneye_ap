@@ -2735,8 +2735,10 @@ def _parse_required_item(raw: str, has_gun_col: bool, has_explosive_col: bool, a
     return groups
 
 
-def _item_to_expr(item: str) -> str:
+def _item_to_expr(item: str, weapon_names=()) -> str:
     """Convert a single item name/sentinel to a Python state-check expression string."""
+    if item in weapon_names:
+        return f'has_weapon(state, player, {item!r})'
     if item == "__GUN__":
         return "has_gun(state, player)"
     elif item == "__EXPLOSIVE__":
@@ -2744,23 +2746,23 @@ def _item_to_expr(item: str) -> str:
     elif item.startswith("__PROG__"):
         return f'state.has("Progressive Weapon", player, {item[8:]})'
     else:
-        return f'state.has("{item}", player)'
+        return f'state.has({item!r}, player)'
 
 
-def _groups_to_exprs(groups: list) -> list:
+def _groups_to_exprs(groups: list, weapon_names=()) -> list:
     """Convert AND-of-OR groups to a list of expression strings (one per AND condition)."""
     result = []
     for or_group in groups:
         if len(or_group) == 1:
-            result.append(_item_to_expr(or_group[0]))
+            result.append(_item_to_expr(or_group[0], weapon_names))
         else:
-            result.append("(" + " or ".join(_item_to_expr(i) for i in or_group) + ")")
+            result.append("(" + " or ".join(_item_to_expr(i, weapon_names) for i in or_group) + ")")
     return result
 
 
-def _emit_entrance_rule(lines, ent, groups):
+def _emit_entrance_rule(lines, ent, groups, weapon_names=()):
     """Append add_rule lines for a mission entrance."""
-    exprs = _groups_to_exprs(groups)
+    exprs = _groups_to_exprs(groups, weapon_names)
     if len(exprs) == 1:
         lines.append(f'    add_rule(world.multiworld.get_entrance("{ent}", player),')
         lines.append(f'             lambda state: {exprs[0]})')
@@ -2773,9 +2775,9 @@ def _emit_entrance_rule(lines, ent, groups):
         lines.append(f'             ))')
 
 
-def _emit_location_rule(lines, loc_name, groups):
+def _emit_location_rule(lines, loc_name, groups, weapon_names=()):
     """Append a validity-guarded add_rule call for a location."""
-    exprs = _groups_to_exprs(groups)
+    exprs = _groups_to_exprs(groups, weapon_names)
     lines.append(f'    if "{loc_name}" in world.location_name_to_id and is_valid_location(world, "{loc_name}"):')
     if len(exprs) == 1:
         lines.append(f'        add_rule(world.multiworld.get_location("{loc_name}", player),')
@@ -2837,6 +2839,9 @@ def _get_helper_item_names(raw: str, alias_map: dict, skip_progressive: bool = F
 
 def gen_rules_py(rules, locations, items):
     """Generate Rules.py from the Rules sheet and Items data."""
+
+    # 1. Identify specific weapons using the same item rows as the client.
+    weapon_names = {row["item_name"].strip() for row in get_progressive_gun_rows(items)}
 
     active_location_names = {
         loc.get("location_name", "").strip()
@@ -2937,6 +2942,8 @@ def gen_rules_py(rules, locations, items):
     lines.append("")
     lines.append("from typing import TYPE_CHECKING")
     lines.append("from worlds.generic.Rules import add_rule")
+    lines.append("from .client_data import WEAPON_ITEM_DEFS")
+    lines.append("from .Items import PROGRESSIVE_GUN_ITEM_NAME")
     lines.append("from .Locations import (")
     lines.append("    ITEM_SHARED_LOCATION_GROUPS,")
     lines.append("    MISSION_CLEAR_MODE_PER_MAP,")
@@ -2947,6 +2954,29 @@ def gen_rules_py(rules, locations, items):
     lines.append('    from . import GoldeneyeWorld')
     lines.append("")
     lines.append("")
+
+    # 2. Derive thresholds from the actual runtime order, without another ladder.
+    lines.extend([
+        "# The client unlocks WEAPON_ITEM_DEFS in insertion order.",
+        "WEAPON_PROGRESSIVE_COUNTS = {",
+        "    weapon['item_name']: count",
+        "    for count, weapon in enumerate(WEAPON_ITEM_DEFS.values(), start=1)",
+        "}",
+        "",
+        "",
+        "def has_weapon(state, player: int, weapon_name: str) -> bool:",
+        "    # 1. Preserve direct weapon ownership in either mode.",
+        "    if state.has(weapon_name, player):",
+        "        return True",
+        "    # 2. Progressive ownership must reach this weapon's runtime position.",
+        "    return (",
+        "        state.multiworld.worlds[player].options.progressive_weapons.value == 1",
+        "        and state.has(PROGRESSIVE_GUN_ITEM_NAME, player,",
+        "                      WEAPON_PROGRESSIVE_COUNTS[weapon_name])",
+        "    )",
+        "",
+        "",
+    ])
 
     # has_gun helper
     lines.append("BULLET_GUN_NAMES = [")
@@ -3004,14 +3034,14 @@ def gen_rules_py(rules, locations, items):
     lines.append("    # Mission entrance rules")
     for ent, groups in entrance_rule_defs:
         if groups:
-            _emit_entrance_rule(lines, ent, groups)
+            _emit_entrance_rule(lines, ent, groups, weapon_names)
     lines.append("")
 
     # Location rules
     if location_rules:
         lines.append("    # Location rules")
         for loc_name in sorted(location_rules):
-            _emit_location_rule(lines, loc_name, location_rules[loc_name])
+            _emit_location_rule(lines, loc_name, location_rules[loc_name], weapon_names)
         lines.append("")
 
     lines.append("    for shared_name, per_difficulty_names in ITEM_SHARED_LOCATION_GROUPS.items():")
@@ -3038,7 +3068,7 @@ def gen_rules_py(rules, locations, items):
         for loc_name, shared_groups, per_difficulty_groups in victory_rule_defs:
             lines.append(f'    if world.options.mission_clear_mode.value == MISSION_CLEAR_MODE_PER_MAP:')
             if shared_groups:
-                shared_exprs = _groups_to_exprs(shared_groups)
+                shared_exprs = _groups_to_exprs(shared_groups, weapon_names)
                 if len(shared_exprs) == 1:
                     lines.append(f'        add_rule(world.multiworld.get_location("{loc_name}", player),')
                     lines.append(f'                 lambda state: {shared_exprs[0]})')
@@ -3053,7 +3083,7 @@ def gen_rules_py(rules, locations, items):
                 lines.append(f'    else:')
                 diff_exprs = []
                 for i, diff_groups in enumerate(per_difficulty_groups):
-                    parts = _groups_to_exprs(diff_groups)
+                    parts = _groups_to_exprs(diff_groups, weapon_names)
                     expr = parts[0] if len(parts) == 1 else "(" + " and ".join(parts) + ")"
                     label = difficulty_labels[i] if i < len(difficulty_labels) else f"Difficulty {i + 1}"
                     diff_exprs.append((expr, label))

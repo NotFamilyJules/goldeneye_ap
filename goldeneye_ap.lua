@@ -158,6 +158,7 @@ local trigger_armed = false
 local trigger_countdown = -1
 local applied = false
 local startup_frame = 0
+local mission_attempt = 0
 local ec_pulse_count = 0
 local last_timer_ec = nil
 local last_screen_id = -1
@@ -519,8 +520,14 @@ event.onframestart(function()
         if screen_id == SCREEN_GAMEPLAY and mission_id ~= 0 and bond_base > 0 then
             write_u32(STARTUP_READY_MAILBOX_ADDR, 0)
             write_u32(FREESTANDING_RESULT_MAILBOX_ADDR, 0)
+            -- Publish only after native RAM is initialized, like the other mailboxes.
+            mission_attempt = mission_attempt + 1
+            write_u32(0x7F218, mission_attempt)
+            write_u32(0x7F21C, 0)
+            write_u32(0x7F220, 0)
             write_u32(KEY_ITEM_FLAGS_MAILBOX_ADDR, 0)
             write_u32(KEY_ITEM_STATE_MAILBOX_ADDR, 0)
+            mainmemory.writebyte(0x7F20B, 0) -- Intro skipping defaults off until slot options arrive.
             mainmemory.writebyte(0x7F209, 0) -- Native item acquisition stays disabled until slot options arrive.
             write_u32(0x7F20C, 0) -- Guard ammunition acquisitions belong only to this attempt.
             mainmemory.writebyte(TANK_OWNED_ADDR, 0)

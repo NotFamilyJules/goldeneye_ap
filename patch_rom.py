@@ -153,6 +153,57 @@ def patch_live_cheat_activation(patched):
     address = 0x7F000000 + start - 0x34B30
     write_u32_be(patched, 0xF4340, 0x0C000000 | (address >> 2 & 0x3FFFFFF))
 
+def patch_deathlink(patched):
+    # 1. Use more of the same replaced cheat getter, before its existing hook.
+    start, end = 0x3E48C, 0x3E60C
+    if hashlib.sha256(patched[start:end]).hexdigest() != "270b577f20fb9d2e20f71c7c5083ecc209d44c4b3f0a706097bd8968e0150352":
+        raise SystemExit("Unexpected DeathLink helper space")
+    # 2. Consume only a request belonging to the current living mission attempt.
+    words = [
+        0x3C088008,  # t0 = AP mailbox base
+        0x8D09F21C,  # t1 = requested attempt
+        0x11200000, 0,
+        0xAD00F21C,  # consume once, including stale requests
+        0x8D0AF218,  # t2 = current attempt
+        0x152A0000, 0,
+        0x3C0B8003,
+        0x8D6CA8C0,  # screen
+        0x240D000B,
+        0x158D0000, 0,
+        0x3C0B8003,
+        0x8D6C6494,  # native camera mode
+        0x240D0004,
+        0x158D0000, 0,
+        0x8D0AA0B0,  # current player
+        0x11400000, 0,
+        0x8D4B00D8,  # bonddead
+        0x15600000, 0,
+        0x8D4B00A8,  # native player prop
+        0x11600000, 0,
+        0x27BDFFE0,
+        0xAFBF001C,
+        0xAFAA0018,  # preserve player across native call
+        0x914B12B6,
+        0xAFAB0014,  # preserve invincibility
+        0xA14012B6,  # bypass this function's invincibility gate only
+        0xAD09F220,  # mark this attempt as an incoming death
+        0x0FC225EA,  # bondviewKillCurrentPlayer, 7F0897A8
+        0,
+        0x8FAA0018,
+        0x8FAB0014,
+        0xA14B12B6,
+        0x8FBF001C,
+        0x27BD0020,
+        0x0BC02617,  # existing live-cheat helper, 7F00985C
+        0,
+    ]
+    for index in (2, 6, 11, 16, 19, 22, 25):
+        words[index] |= 41 - index - 1
+    for index, word in enumerate(words):
+        write_u32_be(patched, start + index * 4, word)
+    write_u32_be(patched, 0xF4340, 0x0FC02657)
+
+
 PATCHES = [ # Edits to different stuff all around the code
     # bg.c's 32-byte portal queue starts at 0x8007C100. Reserve its tail
     # at the already-used AP mailbox base 0x8007F000: (F000-C100)/32=376.
@@ -709,6 +760,39 @@ def patch_unrandomized_ammo_boxes(patched):
     write_u32_be(patched, 0x85564, 0x8FA40070)
 
 
+def patch_mission_intro_skip(patched):
+    # 1. Use the unused final four words of the replaced mission-unlock getter.
+    # patch_armor_locations occupies 0x428C0 through 0x42970.
+    helper = 0x42970
+    expected = [0x8FB30024, 0x8FB40028, 0x03E00008, 0x27BD0030]
+    actual = [read_u32_be(patched, helper + index * 4) for index in range(4)]
+    if actual != expected:
+        raise SystemExit(f"Unexpected intro helper space: {actual}")
+    words = [0x3C098008,  # t1 = mailbox base; the swirl caller also needs this base
+             0x9121F20B,  # at = skip_cutscenes option
+             0x03E00008,  # return to the original intro-only conditional branch
+             0x00411025] # delay: v0 = native button edge OR option
+    for index, word in enumerate(words):
+        write_u32_be(patched, helper + index * 4, word)
+
+    # 2. Share one predicate: native button edge OR the client's intro option.
+    # Both callers retain the native control lock and all fade/cleanup branches.
+    call = 0x0C000000 | (((0x7F000000 + helper - 0x34B30) >> 2) & 0x3FFFFFF)
+    for start, expected, branch, delay in [
+        (0xB0210, [0x97B90046, 0x97B80042, 0x3C018003, 0x03206027,
+                   0x030C6824, 0x31AEF030, 0x11C0000D, 0], 0x1040000D, 0x3C018003),
+        (0xB081C, [0x97AC0046, 0x97B90042, 0x3C098008, 0x01806827,
+                   0x032DC024, 0x330EF030, 0x11C00022, 0x2529A0B0], 0x10400022, 0x2529A0B0),
+    ]:
+        actual = [read_u32_be(patched, start + index * 4) for index in range(8)]
+        if actual != expected:
+            raise SystemExit(f"Unexpected native intro predicate at {start:X}")
+        words = [0x97A20046, 0x97A10042, 0x00401027, 0x00411024,
+                 call, 0x3042F030, branch, delay]
+        for index, word in enumerate(words):
+            write_u32_be(patched, start + index * 4, word)
+
+
 def build_output_rom(rom: bytes) -> bytes:
     patched = bytearray(rom)
 
@@ -735,6 +819,7 @@ def build_output_rom(rom: bytes) -> bytes:
 
     if cheat_patches:
         patch_live_cheat_activation(patched)
+        patch_deathlink(patched)
 
     patch_key_watch_names(patched)
     patch_tank_entry(patched)
@@ -770,6 +855,7 @@ def build_output_rom(rom: bytes) -> bytes:
 
     patch_armor_locations(patched)
     patch_unrandomized_ammo_boxes(patched)
+    patch_mission_intro_skip(patched)
     update_n64_header_checksums(patched)
     return bytes(patched)
 
