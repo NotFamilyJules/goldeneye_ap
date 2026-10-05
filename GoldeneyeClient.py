@@ -125,6 +125,7 @@ SOLO_AMMO_MULTIPLIER_ADDRESS = 0x30B28
 TANK_OWNED_ADDRESS = 0x7F20A
 TANK_DESCRIPTOR_ADDRESS = 0x7F210
 OBJECTIVE_FLAG_BASE_ADDRESS = 0x75D58
+OBJECTIVE_POINTER_BASE_ADDRESS = 0x75D30
 OBJECTIVE_FLAG_BLOCK_SIZE = 40
 
 #   Constants for loadout
@@ -535,18 +536,13 @@ async def write_key_watch_entries(ctx, items_received, mission, bonddata_bytes, 
 #   Freestanding Item Functions #
 
 def get_active_freestanding_pickup_checks(ctx, mission, difficulty_code, source_type="freestanding_pickup"):
-    item_shuffle = ctx.slot_data["options"]["item_shuffle"]
-    if item_shuffle == 2:
-        checks = mission.get(f"shared_{source_type}_checks", [])
-    elif item_shuffle == 1:
-        checks = mission.get(f"per_difficulty_{source_type}_checks", {}).get(difficulty_code, [])
-    else:
-        return []
-    # Use the server's enabled locations for option and release filtering.
-    server_locations = getattr(ctx, "server_locations", None)
+    # 1. Combine shared sources with this difficulty's sources for mixed modes.
+    checks = (mission.get(f"shared_{source_type}_checks", [])
+              + mission.get(f"per_difficulty_{source_type}_checks", {}).get(difficulty_code, []))
+    # 2. Keep registered sources, including checks already collected this session.
     return [check for check in checks
             if difficulty_code in check.get("difficulty_codes", (1, 2, 3))
-            and (server_locations is None or check["location_id"] in server_locations)]
+            and check["location_id"] in ctx.server_locations]
 
 def build_freestanding_target_writes(active_freestanding_pickup_checks):
     count = len(active_freestanding_pickup_checks)
@@ -1143,7 +1139,7 @@ class GoldeneyeClient(BizHawkClient):
         state = await self.read_mission_state(ctx)
         if (attempt is None or not state["living"] or state["attempt"] != attempt
             or not ctx.slot_data["options"].get("death_link", 0)):
-            logger.info("GoldenEye DeathLink ignored outside a living attempt")
+            # logger.info("GoldenEye DeathLink ignored outside a living attempt")
             return
         await bizhawk.guarded_write(ctx.bizhawk_ctx,
             [(DEATH_REQUEST_ADDRESS, u32_bytes(attempt), "RDRAM")], state["guards"])
@@ -1175,12 +1171,18 @@ class GoldeneyeClient(BizHawkClient):
         for index in range(cursor, len(deliveries)):
             effect = client_data.ITEM_EFFECT_DEFS.get(deliveries[index].item)
             attempt = self.trap_attempts.pop(index, None)
-            if effect is None or effect["effect_type"] not in ("goldeneye_trap", "holster_gun_trap"):
+            if effect is None or effect["effect_type"] not in ("goldeneye_trap", "holster_gun_trap", "auto_fail_trap"):
                 continue
             # 2. History and out-of-level receipts are consumed, never queued.
             if state["living"] and attempt == state["attempt"]:
                 if effect["effect_type"] == "goldeneye_trap":
                     writes = [(GOLDENEYE_TRAP_ADDRESS, bytes([1]), "RDRAM")]
+                elif effect["effect_type"] == "auto_fail_trap":
+                    # Native status evaluation uses saved flags when definitions are absent.
+                    # Mission startup restores both tables on the next attempt.
+                    writes = [(OBJECTIVE_FLAG_BASE_ADDRESS,
+                               u32_bytes(2) * (OBJECTIVE_FLAG_BLOCK_SIZE // 4), "RDRAM"),
+                              (OBJECTIVE_POINTER_BASE_ADDRESS, bytes(OBJECTIVE_FLAG_BLOCK_SIZE), "RDRAM")]
                 else:
                     # Native currentPlayerEquipWeaponWrapper: animation, next, trigger.
                     # Replace a pending draw too, retaining magazines and inventory.
@@ -1195,9 +1197,9 @@ class GoldeneyeClient(BizHawkClient):
                                        (base + 0x3C, u32_bytes(weapon), "RDRAM"),
                                        (base + 0x44, u32_bytes(0), "RDRAM")])
                 applied = await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, state["guards"])
-                logger.info("GoldenEye trap index=%d %s: %s", index, effect["item_name"], "applied" if applied else "transition ignored")
-            else:
-                logger.info("GoldenEye trap index=%d %s: history/outside mission ignored", index, effect["item_name"])
+                # logger.info("GoldenEye trap index=%d %s: %s", index, effect["item_name"], "applied" if applied else "transition ignored")
+            # else:
+                # logger.info("GoldenEye trap index=%d %s: history/outside mission ignored", index, effect["item_name"])
         # 3. Reconnect can replay the item list without replaying its effects.
         if cursor < len(deliveries):
             persistent_store("goldeneye_refills", key, len(deliveries))
@@ -1488,7 +1490,7 @@ class GoldeneyeClient(BizHawkClient):
                         # 2. Report only the source consumed by the guarded startup commit.
                         await ctx.send_msgs([{"cmd": "LocationChecks", "locations": [location_id]}])
                         self.local_checked_locations.add(location_id)
-                        logger.info("GoldenEye native starting source collected: %s (%d)", source["location_name"], location_id)
+                        # logger.info("GoldenEye native starting source collected: %s (%d)", source["location_name"], location_id)
 
                 elif screen_id == SCREEN_GAMEPLAY:
                     # Lua clears this stamp on stage entry. An existing stamp
@@ -1552,7 +1554,7 @@ class GoldeneyeClient(BizHawkClient):
 
                         # 4. Save the next AP index, including deliveries already at cap.
                         persistent_store("goldeneye_refills", refill_key, item_index + 1)
-                        logger.info("GoldenEye refill applied index=%d: %s", item_index, effect["item_name"])
+                        # logger.info("GoldenEye refill applied index=%d: %s", item_index, effect["item_name"])
 
     ########################################
     # | Cheat Shuffler: Live Activation | #
@@ -1597,8 +1599,8 @@ class GoldeneyeClient(BizHawkClient):
                                 (CHEAT_MODE_ADDRESS, u32_bytes(1), "RDRAM"),
                                 (CHEAT_REQUEST_ADDRESS, u32_bytes(mission_id << 8 | cheat_id), "RDRAM"),
                             ])
-                            if await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, guards):
-                                logger.info("GoldenEye cheat activation requested: %s", effect["item_name"])
+                            await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, guards)
+                            # logger.info("GoldenEye cheat activation requested: %s", effect["item_name"])
                             break
 
     ########################################
@@ -1669,7 +1671,7 @@ class GoldeneyeClient(BizHawkClient):
                         live_weapon_item_id = None
 
                         effect = client_data.ITEM_EFFECT_DEFS.get(received_item_id)
-                        if effect is not None and effect["effect_type"] not in ("health_full", "armor_full", "ammo", "cheat", "goldeneye_trap", "holster_gun_trap"):
+                        if effect is not None and effect["effect_type"] not in ("health_full", "armor_full", "ammo", "cheat", "goldeneye_trap", "holster_gun_trap", "auto_fail_trap"):
                             logger.error("GoldenEye unsupported received effect: %s (%s)", effect["item_name"], effect["effect_type"])
 
                         if received_item_id == PROGRESSIVE_GUN_BASE_ITEM_ID:
@@ -1711,7 +1713,7 @@ class GoldeneyeClient(BizHawkClient):
                                     (BONDDATA_pointer_ADDRESS, bonddata_reads[0], "RDRAM"),
                                 ]):
                                 return
-                            logger.info("GoldenEye live device received: %s", gadget["item_name"])
+                            # logger.info("GoldenEye live device received: %s", gadget["item_name"])
                         # 4. Advance after each receipt so a guarded retry cannot repeat earlier grants.
                         self.previous_items_received_count = item_index + 1
 
@@ -1755,23 +1757,23 @@ class GoldeneyeClient(BizHawkClient):
                             handled_bits |= target_bit
                             location_id = check["location_id"]
                             location_name = check["location_name"]
-                            logger.info(
-                                "GoldenEye freestanding pickup recognized index=%d location_id=%d location_name=%s",
-                                matched_target_index,
-                                location_id,
-                                location_name,
-                            )
+                            # logger.info(
+                            #     "GoldenEye freestanding pickup recognized index=%d location_id=%d location_name=%s",
+                            #     matched_target_index,
+                            #     location_id,
+                            #     location_name,
+                            # )
                             if location_id not in self.local_checked_locations:
                                 self.local_checked_locations.add(location_id)
                                 await ctx.send_msgs([{                                          # Send location check to AP
                                     "cmd": "LocationChecks",
                                     "locations": [location_id],
                                 }])
-                                logger.info(
-                                    "GoldenEye freestanding check sent location_id=%d location_name=%s",
-                                    location_id,
-                                    location_name,
-                                )
+                                # logger.info(
+                                #     "GoldenEye freestanding check sent location_id=%d location_name=%s",
+                                #     location_id,
+                                #     location_name,
+                                # )
                         if handled_bits:
                             await bizhawk.guarded_write(ctx.bizhawk_ctx, [
                                 (FREESTANDING_RESULT_MAILBOX_ADDRESS, u32_bytes(freestanding_result_state & ~handled_bits), "RDRAM"),

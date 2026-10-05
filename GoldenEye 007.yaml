@@ -1,0 +1,241 @@
+﻿# Q. What is this file?
+# A. This file contains options which allow you to configure your multiworld experience while allowing
+#    others to play how they want as well.
+#
+# Q. How do I use it?
+# A. The options in this file are weighted. This means the higher number you assign to a value, the
+#    more chances you have for that option to be chosen. For example, an option like this:
+#
+#    map_shuffle:
+#      on: 5
+#      off: 15
+#
+#    Means you have 5 chances for map shuffle to occur, and 15 chances for map shuffle to be turned
+#    off.
+#
+# Q. I've never seen a file like this before. What characters am I allowed to use?
+# A. This is a .yaml file. You are allowed to use most characters.
+#    To test if your yaml is valid or not, you can use this website:
+#        http://www.yamllint.com/
+#    You can also verify that your Archipelago options are valid at this site:
+#        https://archipelago.gg/check
+
+# Your name in-game, limited to 16 characters.
+#     {player} will be replaced with the player's slot number.
+#     {PLAYER} will be replaced with the player's slot number, if that slot number is greater than 1.
+#     {number} will be replaced with the counter value of the name.
+#     {NUMBER} will be replaced with the counter value of the name, if the counter value is greater than 1.
+name: Player{number}
+
+# Used to describe your yaml. Useful if you have multiple files.
+description: Default GoldenEye 007 Template
+
+game: GoldenEye 007
+requires:
+  version: 0.6.7 # Version of Archipelago required for this yaml to work as expected.
+  game:
+    GoldenEye 007: 0.1.0 # Version of the world required for this yaml to work as expected.
+
+GoldenEye 007:
+  ################
+  # Game Options #
+  ################
+  progression_balancing:
+    # A system that can move progression earlier, to try and prevent the player from getting stuck and bored early.
+    # 
+    # A lower setting means more getting stuck. A higher setting means less getting stuck.
+    #
+    # You can define additional values between the minimum and maximum values.
+    # Minimum value is 0
+    # Maximum value is 99
+    random: 0
+    random-low: 0 # random value weighted towards lower values
+    random-high: 0 # random value weighted towards higher values
+    random-range-0-99: 0 # random value between 0 and 99
+    disabled: 0 # equivalent to 0
+    normal: 50 # equivalent to 50
+    extreme: 0 # equivalent to 99
+
+  accessibility:
+    # Set rules for reachability of your items/locations.
+    # 
+    # **Full:** ensure everything can be reached and acquired.
+    # 
+    # **Minimal:** ensure what is needed to reach your goal can be acquired.
+    full: 50
+    minimal: 0
+
+  # Goal
+  # Cradle: Beat Cradle. All Missions: Beat all 20. All Missions All Difficulties: Why do you hate yourself?
+  goal:
+    cradle: 50
+    all_missions: 0
+    all_missions_all_difficulties: 0
+
+  # Starting Mission
+  # Which mission starts unlocked
+  # Choices: Random, dam, facility, runway, surface_1, bunker_1, silo, frigate, surface_2, bunker_2, statue, archives, streets, depot, train, jungle, control, caverns, cradle, aztec, egyptian
+  starting_mission: random
+
+  # Mission Clear Mode
+  # Each map is one check or one check per difficulty per stage (20 locations vs 60)
+  mission_clear_mode:
+    per_difficulty: 0
+    per_map: 50
+
+  # Objective Mode
+  # Choose whether objectives are tracked separately per difficulty or shared across all difficulties.
+  objective_mode:
+    per_difficulty: 0
+    shared: 50
+
+  # Progressive Weapons
+  # Makes the progression more interesting. It's like gun game, but you unlock them in order up to Golden Gun, but starting with Klobb lol
+  progressive_weapons:
+    'false': 0
+    'true': 50
+
+  # Add Extra Levels
+  # Enable Aztec, Egyptian, or both
+  extra_locations:
+    aztec: 0
+    egyptian: 0
+    both: 0
+    'false': 50
+
+  # Shuffle Items
+  # Choose for freestanding, NPC Drops and Handoffs, and Key items to be shuffled.
+  item_shuffle:
+    per_difficulty: 0
+    shared: 50
+    off: 0
+
+  # Gun Pickups
+  # Choose if guns will be allowed to be picked up from guards, just the ammo, or not at all. Intended option for this randomizer is just ammo as you unlock guns through progressive weapon option.
+  gun_pickup:
+    on: 0
+    just_ammo: 50
+    off: 0
+
+  # Body Armor Sanity
+  # Body armor locations send checks
+  body_armor_sanity:
+    per_difficulty: 0
+    shared: 0
+    off: 50
+
+  # Ammo Crate Sanity
+  # Ammo Crate locations send checks
+  ammo_crate_sanity:
+    per_difficulty: 0
+    shared: 0
+    off: 50
+
+  # Cheats Shuffler
+  # Cheat Unlock level speedruns are now locations for checks, and cheats are now items in the pool that will automatically enable.
+  cheat_shuffler:
+    'false': 50
+    'true': 0
+
+  # Skip Cutscenes
+  # Set to true if you've seen enough of that fucking green truck and want to just play
+  skip_cutscenes:
+    'false': 50
+    'true': 0
+
+  # Randomize Music
+  # Level songs will be randomized
+  randomize_music:
+    'false': 50
+    'true': 0
+
+  # Randomize Enemies
+  # Enemy sprites will be randomized, but normal enemy position and behaviors will be the same
+  randomize_enemies:
+    'false': 50
+    'true': 0
+
+  # randomize_enemy_loadouts
+  # Enemy weapons can be anything for every enemy in either or both hands
+  randomize_enemy_loadouts:
+    'false': 50
+    'true': 0
+
+  # randomize_gun_sfx
+  # All weapon sfx are randomized, PP7 might sound like a rocket Launcher.
+  randomize_gun_sfx:
+    'false': 50
+    'true': 0
+
+  # randomize_grunts
+  # Fatal Hit Sound Effects on guards will be randomized.
+  randomize_grunts:
+    'false': 50
+    'true': 0
+
+  # Goldeneye Trap
+  # Pretty self explainatory honestly...
+  goldeneye_trap:
+    'false': 50
+    'true': 0
+
+  # Holster Gun Trap
+  # Oh, whoops, ooh! I dropped my magnum
+  holster_gun_trap:
+    'false': 50
+    'true': 0
+
+  # Auto Fail Trap
+  # Suddenly fail all objectives in current level
+  auto_fail_trap:
+    'false': 50
+    'true': 0
+
+  # Trap Chance
+  # Chance for junk to become trap (0=none 100=fuck you)
+  trap_chance: 0
+
+  # DeathLink
+  # When Bond dies you die in real life
+  death_link:
+    'false': 50
+    'true': 0
+
+  ###########################
+  # Item & Location Options #
+  ###########################
+  local_items:
+    # Forces these items to be in their native world.
+    []
+
+  non_local_items:
+    # Forces these items to be outside their native world.
+    []
+
+  start_inventory:
+    # Start with the specified amount of these items. Example: "Bomb: 1"
+    {}
+
+  start_hints:
+    # Start with these item's locations prefilled into the ``!hint`` command.
+    []
+
+  start_location_hints:
+    # Start with these locations and their item prefilled into the ``!hint`` command.
+    []
+
+  exclude_locations:
+    # Prevent these locations from having an important item.
+    []
+
+  priority_locations:
+    # Prevent these locations from having an unimportant item.
+    []
+
+  item_links:
+    # Share part of your item pool with other players.
+    []
+
+  plando_items:
+    # Generic items plando.
+    []
