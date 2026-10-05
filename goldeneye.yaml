@@ -123,3 +123,7 @@ GoldenEye 007:
 
   item_links:
     []
+
+  randomize_enemies: false
+  randomize_enemy_loadouts: false
+  randomize_music: false

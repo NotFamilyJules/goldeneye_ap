@@ -1,7 +1,7 @@
 import hashlib
 import os
 import runpy
-
+from pathlib import Path
 
 INPUT_ROM = r"C:\goldeneye_ap\GoldenEye 007 (U) [!].z64"
 OUTPUT_ROM = r"C:\goldeneye_ap\test_build\Goldeneye 007 AP ROM.z64"
@@ -158,7 +158,7 @@ def patch_deathlink(patched):
     start, end = 0x3E48C, 0x3E60C
     if hashlib.sha256(patched[start:end]).hexdigest() != "270b577f20fb9d2e20f71c7c5083ecc209d44c4b3f0a706097bd8968e0150352":
         raise SystemExit("Unexpected DeathLink helper space")
-    # 2. Consume only a request belonging to the current living mission attempt.
+    # 2. Consume a request belonging to the current living mission attempt.
     words = [
         0x3C088008,  # t0 = AP mailbox base
         0x8D09F21C,  # t1 = requested attempt
@@ -238,7 +238,7 @@ PATCHES = [ # Edits to different stuff all around the code
 
     # collect_or_interact_object: skip native weapon/armor/inventory grants.
     (0x084F30, 0x0FC23122, 0x00000000),
-    # This branch runs only for ITEM_TOKEN. Record native acquisition without
+    # This branch runs for ITEM_TOKEN. Record native acquisition without
     # equipping it; the existing Lua callback consumes this inventory entry.
     (0x084F4C, 0x0FC17645, 0x0FC23122),
     (0x084F50, 0x00002025, 0x24040058),
@@ -312,7 +312,7 @@ GUARD_AMMO_PATCHES = [
 ]
 
 # Key Item Receive
-# Keep each native inventory check first. AP permission is only the fallback when the native check says no.
+# Keep each native inventory check first. AP permission is the fallback when the native check says no.
 KEY_ITEM_RECEIVE_PATCHES = [
     (0x0C19A8, 0x27BDFFF8, 0x3C028008),
     (0x0C19AC, 0xAFB00004, 0x8C42F200),
@@ -334,9 +334,9 @@ KEY_ITEM_RECEIVE_PATCHES = [
 ]
 
 # AP watch entries use the game's allocated InvItem pool, never a PropRecord.
-# Type 0x10001 is ignored by native weapon cycling/acquisition. Only the watch
+# Type 0x10001 is ignored by native weapon cycling/acquisition. the watch
 # count/index/model paths read its low half (1). value packs semantic ID/model;
-# text packs the native short/long language IDs. No new RAM arena is required.
+# text packs the native short/long language IDs. 
 KEY_WATCH_PATCHES = [
     (0x0C1B9C, 0x8CA20000, 0x94A20002),  # count: initial type
     (0x0C1C2C, 0x8CA20000, 0x94A20002),  # count: next type
@@ -384,7 +384,7 @@ def patch_key_watch_names(patched):
             write_u32_be(patched, offset + index * 4, word)
 
     # Six words in the first getter's unused, hash-checked tail. Tail-branch to
-    # bondinvAddPropToInv only for unshuffled native items. The shuffled path
+    # bondinvAddPropToInv for unshuffled native items. The shuffled path
     # retains the prior no-grant behavior; guard-gun code is untouched.
     offset = 0xC1F48
     target = 0xC1254
@@ -419,10 +419,10 @@ def patch_key_watch_names(patched):
         write_u32_be(patched, offset + index * 4, word)
 
 
-def patch_semantic_object_ownership(patched):
+def patch_semantic_object_ownership(patched, data):
     # The three remaining getter tails are covered by the full original-body
     # hash checks above. A single leaf query walks stage-owned semantic nodes.
-    # a0=setup tag, v0=owned. No original object or prop is dereferenced.
+    # a0=setup tag, v0=owned.
     def branch(opcode, here, target):
         return opcode | (((target - here - 4) // 4) & 0xFFFF)
 
@@ -443,13 +443,38 @@ def patch_semantic_object_ownership(patched):
         for index, word in enumerate(words):
             write_u32_be(patched, offset + index * 4, word)
 
+    # 1. Egyptian's gun and ammunition tags describe one recovered weapon.
+    # Read their identities from generated sources; do not grant either pickup.
+    mission = data["MISSION_BY_NAME"]["Egyptian"]
+    sources = {source["location_name"]: source for source in mission["shared_freestanding_pickup_checks"]}
+    gun = sources["Egyptian - Golden Gun"]
+    ammo = sources["Egyptian - Golden Gun Ammo"]
+    assert ammo["object_tag"] == gun["object_tag"] + 1
+
+    # 2. Use the unreachable cheat-menu tail after the existing native helpers.
+    # Other stages/tags keep the original semantic-key and native-prop checks.
+    ownership = 0x3E60C
+    expected = "61b8b8ab84a3b603e1c2bc553894e65de13aef610579c4ede7d98e18745c005e"
+    if (read_u32_be(patched, 0x3E384) != 0x03E00008
+            or hashlib.sha256(patched[ownership:0x3E668]).hexdigest() != expected):
+        raise SystemExit("Unexpected weapon ownership helper space")
+    words = [
+        0x3C088003, 0x8D08A8F8, 0x24090000 | mission["mission_id"],
+        0x15090006, 0x24880000 | (-gun["object_tag"] & 0xFFFF),
+        0x2D080002, 0x11000003, 0,
+        0x0BC230C5, 0x24040000 | gun["native_item_id"],  # native bondinvHasInvItem
+        jump(a), 0,
+    ]
+    for index, word in enumerate(words):
+        write_u32_be(patched, ownership + index * 4, word)
+
     # ObjectiveCollectObject: ownership is checked BEFORE object existence and
     # health. With no semantic ownership, preserve every native failure check.
     offset = 0x8BE60
     if hashlib.sha256(patched[offset:offset + 76]).hexdigest() != "2fca6b3164c9469d6dda8bae4d28a0bedcb0d28830ffe92f8508437d71dfde57":
         raise SystemExit("Unexpected native collection-objective instructions")
     complete, failed = 0x8BF68, 0x8BF1C
-    words = [jump(a, True), 0x8E440004,
+    words = [jump(ownership, True), 0x8E440004,
              branch(0x14400000, offset + 8, complete), 0x8E440004,
              0x0FC15C30, 0, branch(0x10400000, offset + 24, failed), 0x00408025,
              0x8C440010, branch(0x10800000, offset + 36, failed), 0,
@@ -465,7 +490,7 @@ def patch_semantic_object_ownership(patched):
     offset = 0x6B84C
     if hashlib.sha256(patched[offset:0x6B8D0]).hexdigest() != "4b2103c025f53b788bc4e38bbec29b1860fd3c7c16357d53688cc2670c3c4718":
         raise SystemExit("Unexpected native AI collection predicate instructions")
-    words = [jump(a, True), 0x92240001,
+    words = [jump(ownership, True), 0x92240001,
              branch(0x14400000, offset + 8, 0x6B8AC), 0x02C02025,
              0x0FC15C30, 0x92240001,
              branch(0x10400000, offset + 24, 0x6B8C4), 0,
@@ -513,7 +538,7 @@ def patch_native_handoff_feedback(patched):
     def jump(offset):
         return 0x08000000 | (((0x7F000000 + offset - 0x34B30) >> 2) & 0x3FFFFFF)
 
-    # 2. Play the key sound only before this exact prop belongs to Bond.
+    # 2. Play the key sound before this exact prop belongs to Bond.
     # At the key case, a0 is the source prop and t7 is g_CurrentPlayer.
     # Keep native pickup/reparenting and the randomized inventory grant unchanged.
     # The existing suppressed key text leaves room for the handoff advance below.
@@ -528,7 +553,7 @@ def patch_native_handoff_feedback(patched):
     for index, word in enumerate(words):
         write_u32_be(patched, 0x84DF4 + index * 4, word)
 
-    # 3. Skip only TextPrintBottom immediately following BondCollectObject.
+    # 3. Skip TextPrintBottom immediately following BondCollectObject.
     # s1 points at the current AI command; s2 is its offset. Advance both by
     # the handoff's two bytes, plus the message's three bytes when present.
     # All other script commands and dialogue keep their normal progression.
@@ -559,7 +584,7 @@ def patch_startup_weapon_grants(patched):
         raise SystemExit("Unexpected native startup inventory instructions")
 
     # 2. Keep projectile initialization and native document/gadget grants.
-    # Guns (IDs below ITEM_BOMBCASE=33) come only from the client's AP loadout.
+    # Guns (IDs below ITEM_BOMBCASE=33) come from the client's AP loadout.
     # Otherwise A can queue a vanilla gun before sync, outliving its inventory node.
     words = [
         0x0FC015C4, 0x8E040004,  # load right projectile models
@@ -590,7 +615,7 @@ def patch_tank_entry(patched):
     start = 0x8508C
     if patched[start:0x850A8] != bytes(28):
         raise SystemExit("Unexpected tank permission helper space")
-    # 2. Replace only g_BondCanEnterTank = 1 in bondviewCalcUpdatePlayerCollision.
+    # 2. Replace g_BondCanEnterTank = 1 in bondviewCalcUpdatePlayerCollision.
     # The original float subtraction and at register are retained by the helper.
     expected = [0x240F0001, 0x3C018003, 0x46062201]
     for index, word in enumerate(expected):
@@ -605,7 +630,7 @@ def patch_tank_entry(patched):
 
 
 def patch_armor_locations(patched):
-    # 1. Use only the unreachable tail of the replaced mission-unlock getter.
+    # 1. Use the unreachable tail of the replaced mission-unlock getter.
     # The live getter ends at 0x428C0; init_menu07 starts at 0x42980.
     # This hash includes the existing difficulty patches in that unused tail.
     start, end = 0x428C0, 0x42980
@@ -622,7 +647,7 @@ def patch_armor_locations(patched):
         return (0x0C000000 if link else 0x08000000) | (((0x7F000000 + offset - 0x34B30) >> 2) & 0x3FFFFFF)
 
     # 2. Find this source in the existing packed descriptors. a0=object;
-    # v0=result bit, or zero. Only kind 4 with this exact model/pad matches.
+    # v0=result bit, or zero. kind 4 with this exact model/pad matches.
     # Read four bytes in their published little-endian order, then the nibble.
     lookup = [
         0x3C088008, 0x2508F150, 0x8D090074, 0x8C8B0004,
@@ -637,7 +662,7 @@ def patch_armor_locations(patched):
         0x00001025, 0x03E00008, 0,
     ]
     capacity = start + len(lookup) * 4
-    # 3. Run only when the original comparison rejects the pickup. Clear that
+    # 3. Run when the original comparison rejects the pickup. Clear that
     # rejection for an active source and continue the remaining native checks.
     # The native function owns its return address; the object is saved at sp+60.
     capacity_words = [
@@ -668,7 +693,7 @@ def patch_armor_locations(patched):
 
 
 def patch_unrandomized_ammo_boxes(patched):
-    # 1. Verify the currently suppressed routine before restoring only its
+    # 1. Verify the currently suppressed routine before restoring its
     # type-20 caller. Guard weapons and gun.c's grenade/knife calls keep suppression.
     if hashlib.sha256(patched[0x845D8:0x8475C]).hexdigest() != "91ef0ab9490b56d925bd568365bd672b3b69654b3754968cd4c46c040f67cf2f":
         raise SystemExit("Unexpected suppressed ammo instructions")
@@ -677,7 +702,7 @@ def patch_unrandomized_ammo_boxes(patched):
         return 0x08000000 | (((0x7F000000 + offset - 0x34B30) >> 2) & 0x3FFFFFF)
 
     # 2. Keep the original quantity/capacity checks and clamped ammo grant.
-    # sp+14 is add_ammo_to_inventory's saved caller. Only the MultiAmmoCrate
+    # sp+14 is add_ammo_to_inventory's saved caller. the MultiAmmoCrate
     # loop returns to 7F0503AC. Reuse the already suppressed text block.
     write_u32_be(patched, 0x845E8, jump(0x845F0))
     words = [
@@ -703,7 +728,7 @@ def patch_unrandomized_ammo_boxes(patched):
     for index, word in enumerate(words):
         write_u32_be(patched, 0x846BC + index * 4, word)
 
-    # 4. Loose magazines are only 0x84 bytes. Keep their native object intact.
+    # 4. Loose magazines are 0x84 bytes. Keep their native object intact.
     # Reuse the same kind-4 descriptor lookup as armor. A matched acquisition
     # records its bit and returns zero ammunition; unmatched magazines retain
     # their original quantity path. This space is the gated-out item-ammo tail.
@@ -770,7 +795,7 @@ def patch_mission_intro_skip(patched):
         raise SystemExit(f"Unexpected intro helper space: {actual}")
     words = [0x3C098008,  # t1 = mailbox base; the swirl caller also needs this base
              0x9121F20B,  # at = skip_cutscenes option
-             0x03E00008,  # return to the original intro-only conditional branch
+             0x03E00008,  # return to the original intro-conditional branch
              0x00411025] # delay: v0 = native button edge OR option
     for index, word in enumerate(words):
         write_u32_be(patched, helper + index * 4, word)
@@ -792,8 +817,94 @@ def patch_mission_intro_skip(patched):
         for index, word in enumerate(words):
             write_u32_be(patched, start + index * 4, word)
 
+#################################################################################################################################
+############################################### RANDOMIZATION FUNCTIONS #########################################################
+####### Functions created to randomize game elements borrowed from the Random-eye-zer. Credits to Murk-17. ######################
+#################################################################################################################################
 
-def build_output_rom(rom: bytes) -> bytes:
+def jump(address, link=False):
+    return (0x0C000000 if link else 0x08000000) | ((address >> 2) & 0x03FFFFFF)
+
+
+def patch_randomization(rom):
+    # Random-eye-zer moves boot/thread stacks, framebuffers and the TLB arena
+    # up 4 MiB. These exact instruction pairs were checked against both ROMs.
+    # The stage heap ends at the TLB arena, so this also makes room for models.
+    expansion_words = {
+        0x1028: 0x3C1D803B,
+        0x1298: 0x3C04803B, 0x1340: 0x3C04803B, 0x1398: 0x3C04803B,
+        0x1654: 0x3C04803B, 0x166C: 0x3C04803E, 0x17C4: 0x3C04803B,
+        0x2454: 0x3C0E803B, 0x2B00: 0x3C04803B, 0x3C98: 0x3C09803B,
+        0x3D38: 0x3C06803E, 0x3D3C: 0x3C05803B,
+        0x4614: 0x3C0E803B, 0x46C0: 0x3C0E803B,
+        0x556C: 0x3C05803B, 0x584C: 0x3C05803B,
+        0x65AC: 0x3C04803B, 0x65B0: 0x3C05803E,
+        0x4F180: 0x3C18803E, 0x4F1B8: 0x3C09803B, 0x4F1F0: 0x3C0B803E,
+        0xBBB2C: 0x3C0F803E, 0xBBB88: 0x3C09803B, 0xBBBD0: 0x3C0D803E,
+    }
+    for offset, original in expansion_words.items():
+        assert int.from_bytes(rom[offset:offset+4], "big") == original, hex(offset)
+        rom[offset:offset+4] = (original + 0x40).to_bytes(4, "big")
+
+    # 1. Verify that AP has replaced the cheat getter and left both tails free.
+    assert rom[0x3E384:0x3E388] == bytes.fromhex("03e00008")
+    for start, end, expected in (
+        (0x3E3FC, 0x3E48C, "ca43ac3eb6ca8077a4b9c4ba1eb4e9d82a6b169cef17a454488b06051c58eae2"),
+        (0x3E538, 0x3E60C, "65683f1e13d2faa8e20fb1962607e5ffbf196ca8c143ed9020a1a3b28aa521c3"),
+    ):
+        assert hashlib.sha256(rom[start:end]).hexdigest() == expected
+
+    # 2. Keep the native tail when disabled. Enabled hooks enter the static
+    # MIPS payload copied from verified ROM padding into the AP-reserved tail.
+    # Version 4153 prevents an old table-mapping client from enabling this code.
+    def wrapper(gate_offset, destination, original):
+        return [0x3C088008, 0x8D090000 | gate_offset, 0x240A4153,
+                0x152A0005, 0,
+                0x3C198007, 0x37390000 | (destination & 0xffff),
+                jump(0x7F009A34), 0, jump(original), 0]
+
+    setup_appearance = wrapper(0xF300, 0x8007F400, 0x7F0234D0)
+    dynamic_appearance = wrapper(0xF300, 0x8007F444, 0x7F0234D0)
+    setup_weapon = wrapper(0xF304, 0x8007F488, 0x7F005710)
+    scripted_weapon = wrapper(0xF304, 0x8007F4EC, 0x7F052214)
+    death_sound = wrapper(0xF308, 0x8007F700, 0x70008E08)
+    death_sound[4] = 0x8FA70068  # Chr pointer saved by the native vocal routine.
+    # First enabled creation copies the 1024-byte payload from cartridge ROM.
+    # This reserved BSS starts zeroed. Later calls find its first instruction.
+    loader = [0x3C08B0C0, 0x2508FC00, 0x3C098008, 0x2529F400,
+              0x8D2A0000, 0x15400007, 0x252B0400,
+              0x8D0A0000, 0xAD2A0000, 0x25080004, 0x25290004,
+              0x152BFFFB, 0, 0x03200008, 0]
+    payload = (Path(__file__).parent / "native" / "enemy_randomization.bin").read_bytes()
+    assert len(payload) <= 0x400
+    assert rom[0xBFFC00:0xC00000] == bytes([255])*0x400
+    rom[0xBFFC00:0xC00000] = payload.ljust(0x400, b"\0")
+    blocks = ((0x3E3FC, setup_appearance), (0x3E434, dynamic_appearance),
+              (0x3E460, death_sound), (0x3E538, setup_weapon), (0x3E564, loader), (0x3E5A0, scripted_weapon))
+    for start, words in blocks:
+        for index, word in enumerate(words):
+            rom[start + index * 4:start + index * 4 + 4] = word.to_bytes(4, "big")
+
+    # 4. Replace verified JAL instructions
+    for offset, original, helper in (
+        (0x58310, 0x0FC08D34, 0x3E3FC),
+        (0x68D18, 0x0FC08D34, 0x3E434),
+        (0x37314, 0x0FC015C4, 0x3E538),
+        (0x86F10, 0x0FC14885, 0x3E5A0),
+        (0x5BCF4, 0x0C002382, 0x3E460),
+        (0x5BD5C, 0x0C002382, 0x3E460),
+    ):
+        assert int.from_bytes(rom[offset:offset + 4], "big") == original
+        address = 0x7F000000 + helper - 0x34B30
+        rom[offset:offset + 4] = jump(address, True).to_bytes(4, "big")
+
+#################################################################################################################################
+############################################ OK NOW BUILD THE ROM ###############################################################
+#################################################################################################################################
+
+def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
+    if sha1_bytes(rom) != "abe01e4aeb033b6c0836819f549c791b26cfde83":
+        raise SystemExit("Expected the verified vanilla USA ROM; do not stack ROM patches.")
     patched = bytearray(rom)
 
     # alloc_additional_item_slots: extend the actual stage allocation, never a
@@ -813,7 +924,7 @@ def build_output_rom(rom: bytes) -> bytes:
         actual = read_u32_be(patched, offset)
         if actual != expected:
             raise SystemExit(
-                f"Unexpected word at 0x{offset:06X}: 0x{actual:08X} expected 0x{expected:08X}"
+                f"Unexpected word at 0x{offset:06X}: 0x{actual:08X} expected 0x{expected:08X}" # Hexidecimal war crime error handling
             )
         write_u32_be(patched, offset, replacement)
 
@@ -823,7 +934,7 @@ def build_output_rom(rom: bytes) -> bytes:
 
     patch_key_watch_names(patched)
     patch_tank_entry(patched)
-    patch_semantic_object_ownership(patched)
+    patch_semantic_object_ownership(patched, data)
     patch_native_handoff_feedback(patched)
 
     # Native helper behavior:
@@ -856,6 +967,8 @@ def build_output_rom(rom: bytes) -> bytes:
     patch_armor_locations(patched)
     patch_unrandomized_ammo_boxes(patched)
     patch_mission_intro_skip(patched)
+    if randomization_hooks:
+        patch_randomization(patched)
     update_n64_header_checksums(patched)
     return bytes(patched)
 

@@ -1,75 +1,65 @@
 # GoldenEye 007 Setup Guide
 
-## What You Need
+## First-time setup
 
-- Archipelago `0.6.6` or newer
-- BizHawk (Tested on 2.10, let me know if it works on other versions)
-- GoldenEye 007 .apworld
-- goldeneye_ap_randomizer.lua
-- GoldenEye 007 ROM that you definitely legally acquired
-- "GoldenEye 007 (U) [!] Everything Unlocked.bps"
+Install Archipelago 0.6.7 or newer, BizHawk 2.10, and the matching
+`goldeneye.apworld`. Restart Archipelago after installing the world.
+You need your own original USA GoldenEye 007 ROM in `.z64` format.
+An already patched ROM will not work as the base.
 
-## Install the AP World
+## Play from a room
 
-1. Once Archipelago is installed, double click goldeneye.apworld and wait for the pop-up to say it installed successfully.
-2. Restart Archipelago tools if they were already open. I still mess this up all the time, you actually have to completely close everything AP if you install a new apworld.
+1. Download your player's `.apge` patch from the Archipelago room page.
+2. Open it with Archipelago Launcher. On Windows, use **Open with**, select
+   `ArchipelagoLauncher.exe`, and choose to always use it for `.apge` files.
+   Alternatively, use **Open Patch** in Archipelago Launcher.
+3. On first use, select your base ROM and `EmuHawk.exe` when asked.
 
-## Generate a Seed
+The launcher creates a patched `.z64` beside the download, starts BizHawk,
+loads GoldenEye's Lua script, enables the 8 MiB Expansion Pak, and opens the
+client. The ROM supplies your slot and seed. Room downloads supply the server
+address. A password-protected room still asks for its password.
 
-1. Open your YAML template.
-2. Configure your GoldenEye options.
-3. Generate normally through Archipelago.
-4. Do death_link unless you're a big baby.
+For a patch taken directly from a locally generated output ZIP, enter the
+server address in the client. That file has not yet received a hosted room's
+connection address.
 
-## Patch your legally acquired GoldenEye ROM
+The launcher keeps a separate GoldenEye BizHawk profile under Archipelago's
+user folder at `goldeneye/bizhawk`. It initially copies your normal BizHawk
+controls and preserves changes you make in that profile. The original
+BizHawk configuration is not changed. Launch from a cold boot, not an old
+save state. Close an earlier GoldenEye emulator/client before opening another
+room patch.
 
-1. I'll definitely have this done for you in a later build but...
-2. https://www.marcrobledo.com/RomPatcher.js/ unless you have a better way of patching.
-3. ROM file is the vanilla rom. Patch file is the "GoldenEye 007 (U) [!] Everything Unlocked.bps".
-3. Apply Patch.
-4. That shooould be it.
+## Generate a seed
 
-## Connect to Archipelago
+Configure your GoldenEye player YAML and generate normally. The output ZIP
+now includes a separate `.apge` for each GoldenEye player. Upload the generated
+game to a room or distribute those patches to players. The seed host does not
+need a base ROM; only players need one when applying their patches.
 
-1. Open Archipelago Launcher.
-2. Search or scroll to find BizHawk Client.
-3. Double click it until it actually opens.
-4. Connect it to your server using the top bar.
-5. It's going to wait until the lua is loaded in the next step. After that it'll prompt for your SLOT NAME.
+All five randomizer options default off: enemy appearances, enemy loadouts,
+music, gun sounds, and death grunts. The patched ROM always requires the
+8 MiB Expansion Pak. Looping and chained weapon sounds remain excluded.
+Full mission testing, comprehensive music transitions, and normal-playthrough
+victory confirmation remain unfinished. See [randomization details](randomization.txt).
 
-## BizHawk Setup
+## Manual play
 
-IMPORTANT: Make sure you've put goldeneye_ap_randomizer.lua in C:\ProgramData\Archipelago\data\lua. It needs to be in the same folder as `connector_bizhawk_generic.lua`.
+The main patched ROM still works with the BizHawk Client and
+`goldeneye_ap.lua`. Manual setup requires enabling the Expansion Pak, loading
+the Lua script, and entering the server and slot yourself. Use the ROM,
+client, and Lua from the same build.
 
-1. Open the patched GoldenEye ROM in BizHawk.
-2. Tools > Lua Console
-3. Script > Open Script...
-4. Load `goldeneye_ap_randomizer.lua`.
+Set `skip_cutscenes: true` before generating to skip mission openings. This
+does not skip endings, deaths, dialogue, or objective scenes. Received cheat
+items unlock native menu entries; choose them before starting a mission.
+Cheat-unlock checks require successful runs with cheats off.
 
-## BizHawk Setup
+## Building the world package
 
-1. Open the patched GoldenEye ROM in BizHawk.
-2. Tools > Lua Console
-3. Script > Open Script...
-2. Load `goldeneye_ap_randomizer.lua`.
-
-## Troubleshooting
-
-To skip mission openings, set `skip_cutscenes: true` under `GoldenEye 007:` in
-your local player YAML before generating a new session. It defaults to false.
-Use the updated ROM, client, and Lua script together. This option requests the
-native opening-camera and Bond-animation skips, including their normal fades.
-It also applies to retries. Endings, deaths, dialogue, objective scenes, and
-native mission timing are unchanged. Keep recorded TAS sessions on their
-recorded setting; existing fixtures use false.
-
-Received cheat items unlock their entries in the native cheat menu. Choose them
-before starting a mission; receiving one does not switch it on mid-mission.
-Cheat-unlock checks use the original mission, difficulty, and time limit and
-require a successful run with cheats off.
-
-Use the client, Lua script, and ROM patcher from the same generated package.
-Rebuild the ROM when the client reports an outdated pickup table or cheat menu.
-
-- If the client does not connect, make sure `goldeneye_ap_randomizer.lua` and `connector_bizhawk_generic.lua` are in the same folder.
-- If the world does not appear in Archipelago, confirm the `.apworld` is in `custom_worlds` and that `archipelago.json` is present inside the package.
+After changing the ROM patcher or its native payload, run
+`python test_build/build_room_patch.py` before packaging the world. This build
+step requires `bsdiff4` and the original USA ROM. It regenerates the bundled
+ROM delta and verifies that applying it reproduces the main build. No ROM
+is included in the `.apworld` or room download.

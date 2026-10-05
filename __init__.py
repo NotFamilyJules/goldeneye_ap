@@ -1,4 +1,6 @@
 import logging
+import typing
+import settings
 
 from BaseClasses import CollectionState, Item, Tutorial
 from worlds.AutoWorld import WebWorld, World
@@ -17,6 +19,16 @@ from .Locations import get_location_names, get_total_locations, is_enabled_extra
 from .Options import GoldeneyeOptions, create_option_groups
 from .Regions import create_regions
 from .Rules import set_rules
+from .Rom import GoldeneyeProcedurePatch, generate_output
+
+
+class GoldeneyeSettings(settings.Group):
+    class RomFile(settings.UserFilePath):
+        description = "GoldenEye 007 USA ROM (.z64)"
+        copy_to = "GoldenEye 007 (U) [!].z64"
+        md5s = [GoldeneyeProcedurePatch.hash]
+
+    rom_file: RomFile = RomFile(RomFile.copy_to)
 
 
 def build_item_name_to_id() -> dict[str, int]:
@@ -53,14 +65,25 @@ class GoldeneyeWeb(WebWorld):
 
 class GoldeneyeWorld(World):
     game = "GoldenEye 007"
+    settings: typing.ClassVar[GoldeneyeSettings]
+    required_client_version = (0, 6, 7)
     item_name_to_id = build_item_name_to_id()
     location_name_to_id = get_location_names()
     options_dataclass = GoldeneyeOptions
     option_groups = create_option_groups()
     web = GoldeneyeWeb()
 
+    def generate_output(self, output_directory):
+        generate_output(self, output_directory)
+
     def generate_early(self) -> None:
-        # 1. Choose an enabled start; check its access after rules are installed.
+        # 1. All difficulties need separate mission clear checks.
+        if (self.options.goal.value == 2
+                and self.options.mission_clear_mode.value == 2):
+            self.options.mission_clear_mode.value = 1
+            logging.warning('Goldeneye: Mission Clear Mode changed to "Per Difficulty" do to goal set to All Missions All Difficulties')
+
+        # 2. Choose an enabled start; check its access after rules are installed.
         self.random_start = self.options.starting_mission.value == self.options.starting_mission.random_value
         if self.random_start:
             eligible_missions = [
@@ -70,7 +93,7 @@ class GoldeneyeWorld(World):
             ]
             self.options.starting_mission.value = self.random.choice(eligible_missions)
 
-        # 2. Give the resolved mission its normal starting unlock.
+        # 3. Give the resolved mission its normal starting unlock.
         self.starting_unlock = self.create_item(MISSION_UNLOCK_NAMES[self.options.starting_mission.value - 1])
         self.multiworld.push_precollected(self.starting_unlock)
 
@@ -79,14 +102,15 @@ class GoldeneyeWorld(World):
 
     def set_rules(self) -> None:
         set_rules(self)
-        if self.options.goal.value == 1:
-            # Each enabled mission contributes one supported difficulty route.
+        if self.options.goal.value in (1, 2):
+            # Each enabled mission requires one route, or all difficulty routes.
             clear_groups = [[location for location in self.multiworld.get_locations(self.player)
                              if location.parent_region.name == mission_name and location.name.endswith("(Clear)")]
                             for mission_name in MISSION_UNLOCK_NAMES
                             if is_enabled_extra_region(self, mission_name)]
             add_rule(self.multiworld.get_location("Stopped Goldeneye", self.player),
-                     lambda state: all(any(location.can_reach(state) for location in group)
+                     lambda state: all((all if self.options.goal.value == 2 else any)(
+                                           location.can_reach(state) for location in group)
                                        for group in clear_groups))
         self.resolve_starting_mission()
 
@@ -151,12 +175,15 @@ class GoldeneyeWorld(World):
         slot_data["Slot"] = self.multiworld.player_name[self.player]
         slot_data["TotalLocations"] = get_total_locations(self)
         # 1. Publish the actual goal checks selected for this generated world.
-        goal_missions = MISSION_UNLOCK_NAMES if self.options.goal.value == 1 else ["Cradle"]
+        goal_missions = ["Cradle"] if self.options.goal.value == 0 else MISSION_UNLOCK_NAMES
         slot_data["goal_clear_groups"] = []
         for mission_name in goal_missions:
             clear_ids = [location.address for location in self.multiworld.get_locations(self.player)
                          if location.parent_region.name == mission_name and location.name.endswith("(Clear)")]
             if clear_ids:
-                slot_data["goal_clear_groups"].append(clear_ids)
+                if self.options.goal.value == 2:
+                    slot_data["goal_clear_groups"].extend([location_id] for location_id in clear_ids)
+                else:
+                    slot_data["goal_clear_groups"].append(clear_ids)
         slot_data["goal_location_id"] = self.location_name_to_id["Stopped Goldeneye"]
         return slot_data

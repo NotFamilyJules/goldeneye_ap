@@ -1,0 +1,180 @@
+NATIVE ENEMY AND AUDIO RANDOMIZATION
+
+Current build
+-------------
+Authoritative sources: test_build/goldeneye_apworld.
+Build: powershell -File test_build/build_native_enemy_code.ps1
+Then: python test_build/build_randomization_candidate.py
+Outputs: test_build/candidate_all_settings/GoldenEye AP Randomization Candidate.z64
+and its matching goldeneye.apworld. The older candidate_native_randomization
+folder remains a historical class-mapping snapshot.
+
+Requires an 8 MiB Expansion Pak. In BizHawk N64 sync settings, disable
+"Disable Expansion Slot" and restart the ROM. The isolated test runner makes
+this change only in its own configuration. Start from a cold boot, not an old
+save state. Do not stack this patch onto another ROM.
+
+Options, all default off:
+  randomize_enemies
+  randomize_enemy_loadouts
+  randomize_music
+  randomize_gun_sfx
+  randomize_grunts
+The candidate_native_per_spawn folder preserves the earlier three-option build.
+
+Enemy flow
+----------
+AP client publishes two 32-bit enable words at RDRAM 07F300/07F304 in a menu.
+Enabled is 00004153; disabled is zero. There are NO Python enemy mappings,
+per-type substitutions, per-character Python tables, or enemy seed hashing.
+Music retains the previous independent AP-slot mapping.
+
+The four native ROM hooks check their switch. Disabled hooks tail-call the
+original function without drawing randomness. The first enabled hook copies
+1024 bytes of native code/data from ROM BFFC00..C00000 into 8007F400..8007F800.
+That ROM range was verified FF padding. The RAM is inside the already reserved
+portal-queue tail, not an allocation borrowed from the stage heap. The first
+instruction is initially zero in BSS and acts as the one-time load marker.
+Later enabled hooks enter the already-loaded code. No Python executable-code
+transfer is required. The original portal queue remains capped at 376 entries.
+
+Native selection lives in native/enemy_randomization.c. ABI wrappers are in
+native/enemy_hooks.s; the compiler produces native/enemy_randomization.bin.
+The four entry addresses are fixed by those assembly wrappers:
+  setup appearance   8007F400
+  dynamic appearance 8007F444
+  setup weapon       8007F488
+  scripted weapon    8007F4EC
+The payload calls vanilla randomGetNext at 7000A450. Every eligible creation
+gets a fresh draw. Identical original bodies and weapons do not share a pick.
+Coincidental repeats are normal. Retries/reloads can reroll; this is no longer
+an AP-seeded enemy layout. Normal game RNG consumption changes when enabled.
+
+Appearances
+-----------
+Use Random-eye-zer's 36-body pool and native male/female head pools. Each
+creation draws body % 36, then an appropriate separate head, or -1 for bodies
+with built-in heads. Model arguments AND caller body/head locals are updated.
+Character IDs, AI, positions, objective tags and AP check IDs remain native.
+Both setup and dynamic actors are covered. Bond's separate construction path
+is unchanged. The broad character hooks also cover scripted NPCs/allies.
+
+Loadouts
+--------
+Use the hack's 16 unconditional weapon/model pairs: Golden Gun, rocket
+launcher, grenade launcher, shotgun, Cougar Magnum, auto shotgun, sniper,
+RC-P90, AR33, Phantom, D5K, ZMG, KF7, Klobb, DD44 and PP7.
+Each eligible creation draws RNG % 16. Unlike the hack's 19-entry gated
+retry loop, this omits its disabled Silver/Gold PP7 and Moonraker Laser entries
+up front; the available pool is the same as its default enemy weapon pool.
+Eligibility follows its input whitelist: IDs 2..25, 30 and 31.
+
+The previous one/two-handed pool partition and Train/Caverns class mappings
+are removed. Both hands independently select a matching model/weapon pair.
+The setup hook runs only in the assigned-to-character branch. Native hand
+flags and original creation calls are preserved. This does not force a second
+weapon into an empty hand, add player starting weapons, or grant AP ownership.
+Native drop/pair behavior after combat still needs gameplay validation.
+
+Explosive replacements can damage mission objectives. We have NOT imported
+the hack's Caverns invulnerability edits or Train AI timing edits. Those
+missions and other objective-sensitive encounters need playthrough testing.
+This is a candidate, not a full mission-safety certification.
+
+Memory and hook layout
+----------------------
+The initial 4 MiB experiment reproduced a Dam load failure. The 8 MiB candidate
+loads all 36 original Dam guards, with 27 distinct bodies in the appearance-only
+capture. This adopts the original hack's upper-memory layout instead of
+restoring the per-body restriction.
+
+24 verified LUI words move boot/thread stack and framebuffer addresses up
+400000, including the TLB arena boundary. The native stage heap extends to
+that arena and therefore receives the extra memory. The mapping/heap logic
+is otherwise native. address_map.json includes every differing word, including
+these memory changes, payload, hooks and recalculated header checksums.
+
+Purpose           ROM     original JAL  replacement JAL   ROM wrapper
+Setup appearance  058310  0FC08D34      0FC02633          03E3FC
+Dynamic actor     068D18  0FC08D34      0FC02641          03E434
+Setup weapon      037314  0FC015C4      0FC02682          03E538
+Scripted grant    086F10  0FC14885      0FC0269C          03E5A0
+All original delay slots remain. Each wrapper is 44 bytes. The ROM-copy helper
+is 60 bytes at ROM 03E564 / virtual 7F009A34. DeathLink's delay slot at 03E534
+and the surrounding AP cheat/ownership helpers are preserved.
+
+The client checks the four JAL signatures plus the new 4153 gate instruction.
+Older clients use 4150 or 4152 and cannot enable this new payload accidentally. Current
+clients reject the old mapping ROM. Use matching package and ROM.
+
+Music
+-----
+Unchanged from the prior candidate: independent AP seed/slot mapping, fixed
+per mission selector table, no playback hooks. Primary cost fits 6344 bytes;
+secondary cost fits 2000 bytes with 16 attempts and fallback 18 hex. Native
+secondary exceptions for stages 23/2B hex and -1 entries remain. Watch music
+and background sound fields remain native. Full audible transition tests are
+still outstanding.
+
+Verification
+------------
+Run python test_build/test_native_randomization.py for actual emitted MIPS
+instruction tests, including the cartridge-to-RAM loader. Native RNG returns
+are supplied by the test, while its caller-clobbered arguments are overwritten.
+Tests check all 36 body picks on both paths, 2560 weapon/hand/eligibility cases,
+caller locals, preserved arguments and stack/return address, all switch
+combinations, music budgets and exact AP patch isolation.
+
+Run python test_build/run_all_settings.py off
+Then appearances, loadouts, music, gun_sfx, grunts, and all --exercise separately.
+The connected fixture temporarily installs the candidate package, starts an
+isolated emulator/server/client, and restores the previous installed package.
+Its dynamic AI diagnostic lives at 07FA00/07FA40, beyond the native payload.
+
+See candidate_all_settings/TEST_RESULTS.json for current results and snapshots.
+The earlier three-option results remain in candidate_native_per_spawn.
+Startup and synthetic AI probes do not establish full mission completion,
+post-death drops, AP pickup enforcement, or audible music continuity.
+
+
+Weapon firing sounds
+--------------------
+The client writes only WeaponStats.Sound halfwords at guarded menu boundaries.
+The shared native getter serves player and enemy firing. Sixteen weapon entries
+(4..13 and 16..21) draw from finite, unchained sounds:
+002E 006A 006B 006D 006E 006F 0070 0071 0074 0075.
+Address = physical RDRAM 03267A + (weapon ID - 4) * 70 hex.
+Selections are stable for the AP seed/slot with a separate audio random stream.
+Off restores canonical defaults. RC-P90, chained shotgun and special weapon
+audio remain native. Timing, handles, AI hearing, damage and bank data are unchanged.
+
+Death grunts
+------------
+Gate: 8007F308 = 00004153. Map: 28 halfwords at 8007F320..8007F358.
+Male IDs 0086..009E are shuffled; female 000D/000E are shuffled separately.
+Female 000F chains another sound and is retained. Voices stay in their native
+gender pool. This also covers eligible allies/civilians, not just hostile guards.
+Native helper 8007F700 reads Chr.prop+type to exclude player type 6 and compares
+Chr.maxdamage (+100) <= Chr.damage (+FC). Nonfatal hits keep the original sound.
+ROM 05BCF4 and 05BD5C now JAL 7F009930 (word 0FC0264C). Wrapper at ROM 03E460
+loads the Chr saved at caller sp+68. Original sound-selecting delay slots remain.
+The helper tail-calls native sndPlaySfx 70008E08 with bank, handle and return
+address preserved. Native vocal counters and positional attenuation remain.
+
+Validation tools
+----------------
+python -m unittest test_audio_randomization test_native_randomization test_deathlink_traps
+from test_build runs the emitted instruction tests and data/patch isolation.
+python test_build/run_all_settings.py CASE runs a connected cold-boot fixture;
+CASE: off, appearances, loadouts, music, gun_sfx, grunts, all.
+python test_build/run_audio_game.py CASE adds controlled native AI damage/attack
+and sound tracing to a SEPARATE diagnostic ROM, plus a WAV recording.
+The shipped candidate has no test tracing or artificial damage. See the
+candidate TEST_RESULTS.json for actual outcomes and remaining limitations.
+
+Recording reference: BizHawk WAV writer ID "wave" is documented in its source:
+https://github.com/TASEmulators/BizHawk/blob/master/src/BizHawk.Client.EmuHawk/AVOut/WavWriter.cs
+The test harness terminates its emulator; raw combat.wav may have unfinished
+RIFF lengths. combat_finalized.wav and audio_sample.wav wrap the captured PCM
+in finalized WAV headers. Sound IDs are verified by native-call evidence;
+these recordings still benefit from human listening for balance and character.

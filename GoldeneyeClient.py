@@ -90,10 +90,18 @@ import worlds._bizhawk as bizhawk
 import logging
 import json
 import struct
+import hashlib
+import random
+import asyncio
+import pkgutil
+import subprocess
+from pathlib import Path
 from Utils import async_start, persistent_load, persistent_store
 from NetUtils import ClientStatus
 from . import client_data
+from .randomization_tables import (MUSIC_BYTES, MUSIC_POOL, MUSIC_ROWS,)
 from worlds._bizhawk.client import BizHawkClient
+from worlds.LauncherComponents import Component, SuffixIdentifier, Type, components, launch as launch_component
 
 # Debug
 logger = logging.getLogger("Client")
@@ -198,6 +206,16 @@ SCREEN_MISSION_DEBRIEF = 0x0C
 WEAPON_ITEM_DEFS = client_data.WEAPON_ITEM_DEFS
 PROGRESSIVE_GUN_BASE_ITEM_ID = client_data.PROGRESSIVE_GUN_BASE_ITEM_ID
 PROGRESSIVE_GUN_ITEM_IDS = list(WEAPON_ITEM_DEFS.keys())
+
+#   Randomization Constants
+
+RANDOMIZATION_ADDRESS = 0x7F300
+MUSIC_TABLE_ADDRESS = 0x4EB10
+MAGIC = 0x4153
+FIRING_POOL = (0x2E, 0x6A, 0x6B, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x74, 0x75)
+FIRING_DEFAULTS = ((4,107),(5,46),(6,112),(7,106),(8,109),(9,110),
+                   (10,117),(11,46),(12,109),(13,113),(16,116),(17,46),
+                   (18,111),(19,117),(20,107),(21,107))
 
  # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
  # # # # # # # # # # # # # # # FUNCTIONS AND HELPERS SECTION # # # # # # # # # # # # # # # #
@@ -817,6 +835,133 @@ def build_live_inventory_add_weapon_writes(snapshot, bonddata_pointer, weapon_id
 
     return writes
 
+
+# Randomization Functions
+
+def build_firing_sounds(slot_data):
+    # 1. Select only finite, unchained gun reports. Keep native firing timing.
+    stream = randomization_stream(slot_data["Seed"], slot_data["Slot"], "weapon-firing-audio-v1")
+    enabled = slot_data["options"].get("randomize_gun_sfx", 0)
+    return [(0x3267A + (weapon - 4) * 0x70,
+             struct.pack(">H", stream.choice(FIRING_POOL) if enabled else original), "RDRAM")
+            for weapon, original in FIRING_DEFAULTS]
+
+
+def randomization_stream(seed, slot, feature):
+    encoded = json.dumps(["goldeneye-randomization-v1", str(seed), str(slot), feature],
+                         separators=(",", ":")).encode()
+    return random.Random(int.from_bytes(hashlib.sha256(encoded).digest(), "big"))
+
+
+def build_randomization(slot_data):
+    # 1. Publish enemy switches. Native ROM code draws on each creation.
+    options = slot_data["options"]
+    seed, slot = slot_data["Seed"], slot_data["Slot"]
+    block = bytearray(0x58)
+    struct.pack_into(">II", block, 0,
+                     MAGIC if options.get("randomize_enemies", 0) else 0,
+                     MAGIC if options.get("randomize_enemy_loadouts", 0) else 0)
+    # 2. Store the death-only switch and gender-specific sound maps.
+    struct.pack_into(">I", block, 8, MAGIC if options.get("randomize_grunts", 0) else 0)
+    male, female = list(range(0x86, 0x9F)), [13, 14]
+    stream = randomization_stream(seed, slot, "death-vocalizations-v1")
+    stream.shuffle(male)
+    stream.shuffle(female)
+    struct.pack_into(">28H", block, 0x20, *male, *female, 15)
+
+    # 3. Populate music selectors once per slot, without issuing playback calls.
+    # Track 2 shares 6000 bytes with track 3. Always fit its private 2000 bytes,
+    # so a later track-3 transition cannot overwrite a larger selection.
+    music = bytearray()
+    stream = randomization_stream(seed, slot, "music")
+    for stage, primary, background, secondary in MUSIC_ROWS:
+        if options.get("randomize_music", 0):
+            primary = stream.choice([track for track in MUSIC_POOL if MUSIC_BYTES[track] <= 6344])
+            if stage not in (0x23, 0x2B) and secondary != -1:
+                secondary = 0x18
+                for attempt in range(16):
+                    track = stream.choice(MUSIC_POOL)
+                    if MUSIC_BYTES[track] <= 2000:
+                        secondary = track
+                        break
+        music.extend(struct.pack(">4h", stage, primary, background, secondary))
+    return bytes(block), bytes(music)
+
+#   Launcher Functions
+
+def prepare_bizhawk(emuhawk, directory, lua_directory):
+    # 1. Keep a GoldenEye profile, initially inheriting the player's controls.
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    config_path = directory / "bizhawk.json"
+    source_config = config_path if config_path.exists() else Path(emuhawk).with_name("config.ini")
+    config = json.loads(source_config.read_text(encoding="utf-8-sig")) if source_config.exists() else {}
+
+    # 2. Enable 8 MiB before the ROM boots, using the tested N64 core.
+    config.setdefault("PreferredCores", {})["N64"] = "Mupen64Plus"
+    sync = config.setdefault("CoreSyncSettings", {}).setdefault(
+        "BizHawk.Emulation.Cores.Nintendo.N64.N64", {
+            "$type": "BizHawk.Emulation.Cores.Nintendo.N64.N64SyncSettings, BizHawk.Emulation.Cores"})
+    sync["DisableExpansionSlot"] = False
+    config["SingleInstanceMode"] = False
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    # 3. Load the installed world's Lua with this Archipelago installation's libraries.
+    script_path = directory / "goldeneye_ap.lua"
+    script_path.write_bytes(pkgutil.get_data(__package__, "goldeneye_ap.lua"))
+    bootstrap = directory / "launch.lua"
+    bootstrap.write_text(
+        "ARCHIPELAGO_LUA_DIR = " + json.dumps(Path(lua_directory).as_posix(), ensure_ascii=False) + "\n"
+        "dofile(" + json.dumps(script_path.as_posix(), ensure_ascii=False) + ")\n", encoding="utf-8")
+    return config_path, bootstrap
+
+
+def launch(*launch_args):
+    # 1. Import the client context only after Archipelago has loaded its worlds.
+    import colorama
+    import Patch
+    import settings
+    import Utils
+    from CommonClient import get_base_parser, gui_enabled, server_loop
+    from worlds._bizhawk.context import BizHawkClientContext, _game_watcher
+
+    async def main():
+        parser = get_base_parser()
+        parser.add_argument("patch_file", nargs="?", default="")
+        args = parser.parse_args(launch_args)
+        server = args.connect
+
+        # 2. Patch the player's ROM and cold-boot BizHawk with the required settings.
+        if args.patch_file:
+            metadata, rom = Patch.create_rom_file(args.patch_file)
+            server = server or metadata["server"]
+            emuhawk = str(settings.get_settings().bizhawkclient_options.emuhawk_path)
+            config, script = prepare_bizhawk(emuhawk, Utils.user_path("goldeneye", "bizhawk"),
+                                             Utils.local_path("data", "lua"))
+            subprocess.Popen([emuhawk, f"--config={config}", f"--lua={script}", str(Path(rom).resolve())],
+                             cwd=str(Path(emuhawk).resolve().parent), stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # 3. Run the standard BizHawk client; the ROM supplies the slot and seed.
+        ctx = BizHawkClientContext(server, args.password)
+        ctx.server_task = asyncio.create_task(server_loop(ctx), name="ServerLoop")
+        if gui_enabled:
+            ctx.run_gui()
+        ctx.run_cli()
+        watcher = asyncio.create_task(_game_watcher(ctx), name="GameWatcher")
+        await ctx.exit_event.wait()
+        await watcher
+        await ctx.shutdown()
+
+    Utils.init_logging("GoldeneyeClient", exception_logger="Client")
+    colorama.just_fix_windows_console()
+    asyncio.run(main())
+    colorama.deinit()
+
+
+def launch_client(*args):
+    launch_component(launch, name="GoldeneyeClient", args=args)
+
 # # # # # # # # # # # #  
 # # ASYNC FUNCTIONS # #
 # # # # # # # # # # # # 
@@ -946,7 +1091,6 @@ async def read_inventory_snapshot(ctx, bonddata_pointer):       # What do bond's
 
     return snapshot
 
-
       # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
  # # # # # # # # # # # # # # # THE GOLDENEYE CLIENT CLASS # # # # # # # # # # # # # # #
      # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
@@ -955,7 +1099,15 @@ async def read_inventory_snapshot(ctx, bonddata_pointer):       # What do bond's
 class GoldeneyeClient(BizHawkClient):
     game = "GoldenEye 007"
     system = "N64"
-    patch_suffix = ".apge"
+    patch_suffix = None  # The GoldenEye launcher supplies Lua and Expansion Pak settings.
+
+    async def set_auth(self, ctx):
+        # 1. Generated room patches carry their player and seed in ROM padding.
+        identity, = await bizhawk.read(ctx.bizhawk_ctx, [(0xBFF800, 1024, "ROM")])
+        if bytes(identity[:8]) == b"GEAP0001":
+            slot = json.loads(bytes(identity[8:]).split(b"\0", 1)[0])
+            ctx.auth = slot["slot"]
+            ctx.seed_name = slot["seed"]
 
     async def read_mission_state(self, ctx):
         # 1. Read the native attempt, camera and player together.
@@ -1076,8 +1228,18 @@ class GoldeneyeClient(BizHawkClient):
                 (0xF4340, 4, "ROM"), (0x3E390, 4, "ROM")])
             if [bytes(value) for value in signatures] != [bytes.fromhex("3c088007010440219102965003e0000800000000"),
                 bytes.fromhex("0fc02657"), bytes.fromhex("8d09f214")]:
-                logger.error("Rebuild the ROM with this package's patcher; automatic cheat activation requires its native hook.")
+                logger.error("Rebuild the ROM with this package's patcher; its DeathLink/cheat execution hook is outdated.")
                 return False
+
+        randomization_hooks = await bizhawk.read(ctx.bizhawk_ctx, [
+            (0x58310, 4, "ROM"), (0x68D18, 4, "ROM"),
+            (0x37314, 4, "ROM"), (0x86F10, 4, "ROM"),
+            (0x3E404, 4, "ROM"),
+        ])
+        if [bytes(value).hex() for value in randomization_hooks] != [
+                "0fc02633", "0fc02641", "0fc02682", "0fc0269c", "240a4153"]:
+            logger.error("Rebuild the AP ROM with this package's patcher; its randomization hooks are missing.")
+            return False
         
         # CTX = Client Context Object. A ctx is a live Archipelago client state object that is passed through this code.
         ctx.game = self.game
@@ -1115,12 +1277,8 @@ class GoldeneyeClient(BizHawkClient):
             mission_state = await self.update_deathlink(ctx)
             await self.receive_traps(ctx, mission_state)
 
-            # Sync checked locations from AP
-            # update self.local_checked_locations from ctx.locations_checked or ctx.checked_locations so reconnects dont resend old checks
-            checked_locations = getattr(ctx, "locations_checked", None)
-            if checked_locations is None:
-                checked_locations = getattr(ctx, "checked_locations", None)
-            checked_locations = set(checked_locations or ())
+            # Sync server confirmations; locations_checked is only local state.
+            checked_locations = ctx.checked_locations
 
             if checked_locations:
                 for location_id in checked_locations:
@@ -1149,6 +1307,17 @@ class GoldeneyeClient(BizHawkClient):
 
             # bizhawk.write expects: (ctx.bizhawk_ctx, [(address, data, domain)])
             # await pauses this function until the write completes
+
+            # Publish native enemy options and audio selections before mission unlocks.
+            # Never change a live mission's creation rules or audio selectors.
+            randomization_screen = bytes((await bizhawk.read(ctx.bizhawk_ctx,
+                [(SCREEN_ID_ADDRESS, 4, "RDRAM")]))[0])
+            if int.from_bytes(randomization_screen, "big") in (4, 5, 6, 7, 8, 9, 10):
+                randomization_block, music_table = build_randomization(ctx.slot_data)
+                await bizhawk.guarded_write(ctx.bizhawk_ctx, [
+                    (RANDOMIZATION_ADDRESS, randomization_block, "RDRAM"),
+                    (MUSIC_TABLE_ADDRESS, music_table, "RDRAM"),
+                ] + build_firing_sounds(ctx.slot_data), [(SCREEN_ID_ADDRESS, randomization_screen, "RDRAM")])
 
             # Update unlocked levels in game
             await bizhawk.write(ctx.bizhawk_ctx, [(UNLOCK_BASE_ADDRESS, unlock_block, "RDRAM"),])
@@ -1736,3 +1905,7 @@ class GoldeneyeClient(BizHawkClient):
             self.last_startup_ready_mission = None
             self.previous_freestanding_mission_id = None
             return
+
+components.append(Component("GoldenEye 007 Client", component_type=Type.CLIENT, func=launch_client,
+                            file_identifier=SuffixIdentifier(".apge"), game_name="GoldenEye 007",
+                            description="Patch and play GoldenEye with Lua and the Expansion Pak enabled."))

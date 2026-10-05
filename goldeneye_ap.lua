@@ -5,7 +5,7 @@
 lua_major, lua_minor = _VERSION:match("Lua (%d+)%.(%d+)")
 lua_major = tonumber(lua_major)
 lua_minor = tonumber(lua_minor)
-ARCHIPELAGO_LUA_DIR = "C:\\ProgramData\\Archipelago\\data\\lua"
+ARCHIPELAGO_LUA_DIR = ARCHIPELAGO_LUA_DIR or "C:\\ProgramData\\Archipelago\\data\\lua"
 if lua_major > 5 or (lua_major == 5 and lua_minor >= 3) then
     dofile(ARCHIPELAGO_LUA_DIR .. "\\lua_5_3_compat.lua")
 end
@@ -410,7 +410,7 @@ end
 
 -- target.kind values:
 -- 1 - Single weapon pickup; uses a token.	[Dam Sniper Rifle (code.gen line 512)]
--- 2 - Key or mission item; tracks the actual object being collected.	[Runway Ignition Key (code.gen line 513)]
+-- 2 - Retained source prop, including tagged weapons; tracks attachment to Bond.
 -- 3 - Grouped weapon pickups sharing one location; uses tokens.	[Bunker 2’s six Throwing Knives (code.gen line 523)]
 -- 4 - Supplies: native type 21 armor uses the native acquisition hook;
 --     type 7 magazines also use native acquisition; type 20 boxes use tokens.
@@ -467,7 +467,8 @@ end
                     -- Native armor and ammunition hooks retain their object layouts.
                     -- Only weapon sources use the temporary inventory token.
 
-                    if (target.kind == 1 or target.kind == 3) and prop_is_onscreen(live_prop)
+                    local weapon_source = mainmemory.readbyte(tracked.obj + OBJ_OFF_TYPE) == 8
+                    if weapon_source and prop_is_onscreen(live_prop)
                         and (not target.npc_weapon or read_u32(live_prop + 0x1C) == 0) then
                         -- A configured NPC keeps its weapon until it drops it normally.
                         mainmemory.writebyte(tracked.obj + WEP_OFF_WEAPONNUM, ITEM_TOKEN)
