@@ -95,6 +95,8 @@ import random
 import asyncio
 import pkgutil
 import subprocess
+import textwrap
+import unicodedata
 from pathlib import Path
 from Utils import async_start, persistent_load, persistent_store
 from NetUtils import ClientStatus
@@ -114,6 +116,7 @@ logger = logging.getLogger("Client")
 
 BONDDATA_pointer_ADDRESS = 0x7A0B0
 SCREEN_ID_ADDRESS = 0x2A8C0
+NEXT_MENU_ADDRESS = 0x2A8C8  # Native menu request, consumed by menu_init.
 MISSION_ID_ADDRESS = 0x2A8F8
 DIFFICULTY_ADDRESS = 0x2A8FC
 UNLOCK_BASE_ADDRESS = 0x7F000
@@ -1071,6 +1074,28 @@ async def read_inventory_snapshot(ctx, bonddata_pointer):       # What do bond's
      # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
 
 
+# | AP Item Messages | #
+AP_MESSAGE_TEMPLATES = {
+    "received": "{item} received from {player}",
+    "sent": "{item} sent to {player}",
+}
+AP_MESSAGE_LINE_WIDTH = 28
+AP_MESSAGE_BUFFER = 0x79A28
+AP_MESSAGE_INDEX = 0x36898
+AP_MESSAGE_COUNT = 0x3689C
+
+
+def format_ap_message(item, player, direction):
+    # 1. Use printable USA font characters; preserve long names across pages.
+    message = AP_MESSAGE_TEMPLATES[direction].format(item=item, player=player)
+    message = unicodedata.normalize("NFKD", message).encode("ascii", "replace").decode("ascii")
+    message = "".join(character if 32 <= ord(character) <= 126 else " " for character in message)
+    lines = textwrap.wrap(message, width=AP_MESSAGE_LINE_WIDTH)
+    # 2. Two short lines fit the native 100-byte message plus its ending zero.
+    return [("\n".join(lines[index:index + 2]) + "\n").encode("ascii")
+            for index in range(0, len(lines), 2)]
+
+
 class GoldeneyeClient(BizHawkClient):
     game = "GoldenEye 007"
     system = "N64"
@@ -1103,7 +1128,53 @@ class GoldeneyeClient(BizHawkClient):
         state["living"] = camera == 4 and bool(to_rdram_ptr(int.from_bytes(prop, "big"))) and not state["dead"]
         return state
 
+    def queue_ap_message(self, ctx, args):
+        # 1. Use confirmed item transfers, not chat wording or inventory changes.
+        if args.get("type") != "ItemSend":
+            return
+        item = args["item"]
+        recipient = args["receiving"]
+        if ctx.slot not in (item.player, recipient):
+            return
+        identity = (item.player, item.location, recipient, item.item)
+        if identity in self.ap_message_seen:
+            return
+        self.ap_message_seen.add(identity)
+        # A local pickup is one received message, not both sent and received.
+        direction = "received" if recipient == ctx.slot else "sent"
+        player = item.player if direction == "received" else recipient
+        item_name = ctx.item_names.lookup_in_slot(item.item, recipient)
+        self.ap_messages.extend(format_ap_message(item_name, ctx.player_names[player], direction))
+
+    async def show_ap_message(self, ctx, state):
+        # 1. Wait for live gameplay and let existing pickup/objective text finish.
+        if not self.ap_messages or not state["living"]:
+            return
+        bond = state["bond"]
+        addresses = [AP_MESSAGE_INDEX, AP_MESSAGE_COUNT, bond + 0x11D8, bond + 0x29C4]
+        values = await bizhawk.read(ctx.bizhawk_ctx, [(address, 4, "RDRAM") for address in addresses])
+        index, count, hud_off, menu_on = [int.from_bytes(value, "big") for value in values]
+        if not 0 <= index < 5 or count != 0 or hud_off or menu_on:
+            return
+        # 2. Queue one message just as hudmsgBottomShow does. Native code times it.
+        guards = state["guards"] + [(address, value, "RDRAM") for address, value in zip(addresses, values)]
+        shown = await bizhawk.guarded_write(ctx.bizhawk_ctx, [
+            (AP_MESSAGE_BUFFER + index * 101, self.ap_messages[0].ljust(101, b"\0"), "RDRAM"),
+            (AP_MESSAGE_COUNT, u32_bytes(1), "RDRAM"),
+        ], guards)
+        if shown:
+            self.ap_messages.pop(0)
+
     def on_package(self, ctx, cmd, args):
+        # Keep reconnects quiet; a different room/slot starts a fresh message queue.
+        if cmd == "Connected":
+            identity = (ctx.server_seed_name, ctx.team, ctx.slot)
+            if identity != self.ap_message_session:
+                self.ap_message_session = identity
+                self.ap_messages.clear()
+                self.ap_message_seen.clear()
+        if cmd == "PrintJSON":
+            self.queue_ap_message(ctx, args)
         if cmd == "ReceivedItems" and args["index"] > 0:
             for index in range(args["index"], args["index"] + len(args["items"])):
                 self.trap_attempts[index] = self.live_attempt
@@ -1247,6 +1318,9 @@ class GoldeneyeClient(BizHawkClient):
         self.death_attempt = None
         self.death_handled = False
         self.trap_attempts = {}
+        self.ap_messages = []
+        self.ap_message_seen = set()
+        self.ap_message_session = None
 
         return True
 
@@ -1260,6 +1334,7 @@ class GoldeneyeClient(BizHawkClient):
 
             mission_state = await self.update_deathlink(ctx)
             await self.receive_traps(ctx, mission_state)
+            await self.show_ap_message(ctx, mission_state)
 
             # Sync server confirmations; locations_checked is only local state.
             checked_locations = ctx.checked_locations
@@ -1326,6 +1401,14 @@ class GoldeneyeClient(BizHawkClient):
             bonddata_bytes = reads[5]
             
             mission = MISSION_BY_ID.get(mission_id)
+
+            # Return an accidental locked Silo briefing to mission select.
+            if screen_id == 10 and mission_id == 8 and not unlock_block[mission["unlock_byte_offset"]]:
+                await bizhawk.guarded_write(ctx.bizhawk_ctx, [
+                    (NEXT_MENU_ADDRESS, u32_bytes(7), "RDRAM"),
+                ], [(SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
+                    (MISSION_ID_ADDRESS, reads[1], "RDRAM")])
+                return
 
             if screen_id == SCREEN_GAMEPLAY and mission is not None:
                 # Publish intro skipping before loadout readiness, which needs native hand ticks.

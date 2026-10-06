@@ -2,6 +2,7 @@ import hashlib
 import os
 import runpy
 import struct
+import zlib
 from pathlib import Path
 
 INPUT_ROM = r"C:\goldeneye_ap\GoldenEye 007 (U) [!].z64"
@@ -95,6 +96,111 @@ def update_n64_header_checksums(data: bytearray) -> tuple[int, int]:
 #################### Words: Each 0x... is one 32-bit big-endian word. These are the exact 4-byte values written. ################
 #################### Offset: ROM file offset (not a RAM address), the patcher writes directly at this byte. #####################
 #################################################################################################################################
+
+################################
+# | Text Replacement Patches | #
+################################
+
+def patch_text_replacements(rom, original_text, replacement_text):
+
+# 1. Convert the text to bytes
+    
+    original_bytes = original_text.encode("ascii") + b"\x00"
+    replacement_bytes = replacement_text.encode("ascii") + b"\x00"
+         # .encode("ascii") converts Python text into bytes. 
+         # b"\x00" adds a zero byte, which tells GoldenEye “this string ends here.”   
+
+    if len(replacement_bytes) > len(original_bytes):    
+        raise ValueError(f"Replacement text {replacement_text!r} is longer than the original.") # Error if text is too long
+
+
+# 2. Decompress the game data
+
+    game_data = zlib.decompress(rom[0x21990 + 2:], -15) 
+        # 0x21990 is the starting position of GE's main compressed data block [cdataSegmentRomStart` (line 66)]. 
+        # + 2 skips its two-byte header, -15 selects GoldenEye’s raw compression format.
+
+    entry_offset = 0x252C4 + 12  # First real entry
+    
+    matches = []     # preserve the matching bank and string position while this loops
+    
+    while True:
+
+        file_id, name_address, file_start = struct.unpack_from(         # Read the bytes as numbers
+            ">III", game_data, entry_offset                             # ">III" means three unsigned four-byte integers
+        )
+
+        if file_id == 0:  # End of the directory
+            break
+
+        name_offset = name_address - 0x80020D90 # This hex is where the decompressed block normally starts
+        name_end = game_data.index(b"\x00", name_offset)
+        file_name = game_data[name_offset:name_end].decode("ascii")
+
+        if file_name.startswith("L") and file_name.endswith("E"):   
+            text_bank = zlib.decompress(rom[file_start + 2:], -15)  # if the file is a text bank, decompress it
+
+                        # A text bank example:
+                        # Position    Stored value
+                        # 0           12       ← first string starts at byte 12
+                        # 4           18       ← second string starts at byte 18
+                        # 8           24       ← third string starts at byte 24
+                        # 12          "Bond \0"
+                        # 18          "Burgr\0"
+                        # 24          "Sister\0"
+
+                        # The first 12 bytes are a table of offsets
+                        # The last 12 bytes are the actual text strings, each ending with a zero byte.
+          
+            first_text_offset = struct.unpack_from(">I", text_bank, 0)[0]   # read the number at position 0
+
+            for table_offset in range(0, first_text_offset, 4): 
+                text_offset = struct.unpack_from(">I", text_bank, table_offset)[0]
+
+                if text_offset and text_bank.startswith(original_bytes, text_offset):
+                    matches.append(
+                        (file_name, file_start, entry_offset, text_bank, text_offset)
+                    )
+        entry_offset += 12  # Move to the next entry
+
+        # Handle the results of the search
+
+    if not matches:
+        raise ValueError(f"Original text {original_text!r} was not found.")
+
+    if len(matches) > 1:
+        choices = [(match[0], match[4]) for match in matches]
+        raise ValueError(f"Original text {original_text!r} has multiple matches: {choices}")
+
+    file_name, file_start, entry_offset, text_bank, text_offset = matches[0]
+
+# 3. Replace the text without moving any other bytes.
+    
+    text_bank = bytearray(text_bank)
+    padded_replacement = replacement_bytes.ljust(len(original_bytes), b"\x00")  # Pad the replacement with zero bytes to match the original length
+
+    text_bank[text_offset:text_offset + len(original_bytes)] = padded_replacement
+
+# 4. Recompress the edited bank and restore GoldenEye's header.
+
+    compressed_bank = b"\x11\x72" + zlib.compress(
+        text_bank, level=9, wbits=-15
+    )
+    # level=9 asks for maximum compression. wbits=-15 produces the raw format we decompressed earlier. b"\x11\x72" restores GoldenEye’s two-byte header.
+
+# 5. Check that the compressed bank fits.
+
+    next_file_start = struct.unpack_from(">I", game_data, entry_offset + 20)[0]
+    bank_size = next_file_start - file_start
+
+    if len(compressed_bank) > bank_size:
+        raise ValueError(
+            f"{file_name}: compressed text needs {len(compressed_bank)} bytes, "
+            f"but only {bank_size} are available."
+        )
+
+# 6. Write the bank back without shifting the following files.
+    rom[file_start:next_file_start] = compressed_bank.ljust(bank_size, b"\x00")
 
 ################################
 # | Cheat Shuffler: Native Hooks | #
@@ -1029,6 +1135,83 @@ def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
     patch_mission_intro_skip(patched)
     if randomization_hooks:
         patch_randomization(patched)
+
+#############################################################################################################################
+################################################ DIALOG REPLACEMENTS ########################################################
+#############################################################################################################################
+
+### Add a new dialog replacement using this:
+#    patch_text_replacements(
+#        patched,
+#        "Mishkin: A costly lesson.\n",
+#        "Mishkin: Dam, thas crazy.\n",
+#    )
+
+
+    patch_text_replacements(
+        patched,
+        "Bond: Time to leave, Dr. Doak.\n",
+        "Bond: Dr. Doak, I pwesume?\n",
+    )
+
+### Ourumov forgets how to count ##
+
+    patch_text_replacements(
+        patched,
+        "Ourumov: Nine\n",
+        "Ourumov: Ten.\n",
+    )
+
+    patch_text_replacements(
+        patched,
+        "Ourumov: Eight\n",
+        "Ourumov: Uh...\n",
+    )
+
+    patch_text_replacements(
+        patched,
+        "Ourumov: Seven\n",
+        "Ourumov: Six.\n",
+    )
+
+    patch_text_replacements(
+        patched,
+        "Ourumov: Six\n",
+        "Ourumov: Hm\n",
+    )
+
+    patch_text_replacements(
+        patched,
+        "Ourumov: Five\n",
+        "Ourumov: Two?\n",
+    )
+
+    patch_text_replacements(
+        patched,
+        "Ourumov: Four\n",
+        "Ourumov: Uh..\n",
+    )
+
+    patch_text_replacements(
+        patched,
+        "Ourumov: Two\n",
+        "Guard: Bro\n",
+    )
+
+    patch_text_replacements(
+        patched,
+        "Ourumov: One... Kill him!\n",
+        "Ourumov: Fuck it, fire!\n",
+    )
+
+### Sean Bean Dying Jokes ###
+
+    patch_text_replacements(
+        patched,
+        "Trevelyan: Glad you could make it, 007.\n",
+        "Trevelyan: Gee, hope I don't die\n",
+    )
+
     update_n64_header_checksums(patched)
     return bytes(patched)
 
