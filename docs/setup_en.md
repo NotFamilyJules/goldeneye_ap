@@ -38,16 +38,24 @@ now includes a separate `.apge` for each GoldenEye player. Upload the generated
 game to a room or distribute those patches to players. The seed host does not
 need a base ROM; only players need one when applying their patches.
 
-All five randomizer options default off: enemy appearances, enemy loadouts,
-music, gun sounds, and death grunts. The patched ROM always requires the
-8 MiB Expansion Pak. Looping and chained weapon sounds remain excluded.
+All five randomizer options default off: appearances, enemy loadouts,
+music, gun sounds, and All SFX. Appearances includes Bond's model and cuffs.
+Music includes the intro and main menus. All SFX replaces death grunts and
+shuffles every audible sound ID, keeping continuous sounds in a separate
+pool. All SFX overrides Gun SFX when both are enabled. The patched ROM always
+requires the 8 MiB Expansion Pak.
+
+Generate a new room with the updated world to use these changes. Its `.apge`
+contains the sound map and intro/menu music choices, so those work before the
+client connects. Existing room downloads keep their earlier patch and options.
 Full mission testing, comprehensive music transitions, and normal-playthrough
 victory confirmation remain unfinished. See [randomization details](randomization.txt).
 
 ## Manual play
 
-The main patched ROM still works with the BizHawk Client and
-`goldeneye_ap.lua`. Manual setup requires enabling the Expansion Pak, loading
+Use the ROM produced from your room's `.apge` with the BizHawk Client and
+`goldeneye_ap.lua`. The generic build ROM has no slot-specific audio shuffle.
+Manual setup requires enabling the Expansion Pak, loading
 the Lua script, and entering the server and slot yourself. Use the ROM,
 client, and Lua from the same build.
 

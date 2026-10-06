@@ -125,7 +125,7 @@ SOLO_AMMO_MULTIPLIER_ADDRESS = 0x30B28
 TANK_OWNED_ADDRESS = 0x7F20A
 TANK_DESCRIPTOR_ADDRESS = 0x7F210
 OBJECTIVE_FLAG_BASE_ADDRESS = 0x75D58
-OBJECTIVE_POINTER_BASE_ADDRESS = 0x75D30
+AUTO_FAIL_ADDRESS = 0x7F224
 OBJECTIVE_FLAG_BLOCK_SIZE = 40
 
 #   Constants for loadout
@@ -213,10 +213,12 @@ PROGRESSIVE_GUN_ITEM_IDS = list(WEAPON_ITEM_DEFS.keys())
 RANDOMIZATION_ADDRESS = 0x7F300
 MUSIC_TABLE_ADDRESS = 0x4EB10
 MAGIC = 0x4153
-FIRING_POOL = (0x2E, 0x6A, 0x6B, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x74, 0x75)
+FIRING_POOL = (0x01, 0x0B, 0x0C, 0x2E, 0x5C, 0x5D, 0x64, 0x6A, 0x6B,
+               0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x74, 0x75, 0x79, 0xE4, 0xFD)
 FIRING_DEFAULTS = ((4,107),(5,46),(6,112),(7,106),(8,109),(9,110),
-                   (10,117),(11,46),(12,109),(13,113),(16,116),(17,46),
-                   (18,111),(19,117),(20,107),(21,107))
+                   (10,117),(11,46),(12,109),(13,113),(14,253),(15,121),
+                   (16,116),(17,46),(18,111),(19,117),(20,107),(21,107),
+                   (22,228),(24,12),(31,100),(32,11),(35,12),(36,12))
 
  # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
  # # # # # # # # # # # # # # # FUNCTIONS AND HELPERS SECTION # # # # # # # # # # # # # # # #
@@ -835,12 +837,23 @@ def build_live_inventory_add_weapon_writes(snapshot, bonddata_pointer, weapon_id
 # Randomization Functions
 
 def build_firing_sounds(slot_data):
-    # 1. Select only finite, unchained gun reports. Keep native firing timing.
-    stream = randomization_stream(slot_data["Seed"], slot_data["Slot"], "weapon-firing-audio-v1")
-    enabled = slot_data["options"].get("randomize_gun_sfx", 0)
-    return [(0x3267A + (weapon - 4) * 0x70,
-             struct.pack(">H", stream.choice(FIRING_POOL) if enabled else original), "RDRAM")
-            for weapon, original in FIRING_DEFAULTS]
+    # 1. Select firing sounds, including native shotgun chains and P90 loops.
+    # Native ID 0x64 is the finite taser shot; 0x65 is its held loop.
+    stream = randomization_stream(slot_data["Seed"], slot_data["Slot"], "weapon-firing-audio-v2")
+    enabled = (slot_data["options"].get("randomize_gun_sfx", 0)
+               and not slot_data["options"].get("randomize_all_sfx", 0))
+    writes = []
+    for weapon, original in FIRING_DEFAULTS:
+        sound = stream.choice([sound for sound in FIRING_POOL if sound != original]) if enabled else original
+        writes.append((0x3267A + (weapon - 4) * 0x70, struct.pack(">H", sound), "RDRAM"))
+
+    # 2. The watch laser and rocket use separate native playback paths.
+    watch_sound = stream.choice([sound for sound in FIRING_POOL if sound not in (0x5C, 0x5D)])
+    writes.append((0x35E90, struct.pack(">HH", watch_sound, watch_sound) if enabled
+                   else struct.pack(">HH", 0x5C, 0x5D), "RDRAM"))
+    rocket_sound = stream.choice([sound for sound in FIRING_POOL if sound != 1]) if enabled else 1
+    writes.append((0x7F310, struct.pack(">H", rocket_sound), "RDRAM"))
+    return writes
 
 
 def randomization_stream(seed, slot, feature):
@@ -857,15 +870,7 @@ def build_randomization(slot_data):
     struct.pack_into(">II", block, 0,
                      MAGIC if options.get("randomize_enemies", 0) else 0,
                      MAGIC if options.get("randomize_enemy_loadouts", 0) else 0)
-    # 2. Store the death-only switch and gender-specific sound maps.
-    struct.pack_into(">I", block, 8, MAGIC if options.get("randomize_grunts", 0) else 0)
-    male, female = list(range(0x86, 0x9F)), [13, 14]
-    stream = randomization_stream(seed, slot, "death-vocalizations-v1")
-    stream.shuffle(male)
-    stream.shuffle(female)
-    struct.pack_into(">28H", block, 0x20, *male, *female, 15)
-
-    # 3. Populate music selectors once per slot, without issuing playback calls.
+    # 2. Populate music selectors once per slot, without issuing playback calls.
     # Track 2 shares 6000 bytes with track 3. Always fit its private 2000 bytes,
     # so a later track-3 transition cannot overwrite a larger selection.
     music = bytearray()
@@ -1178,11 +1183,11 @@ class GoldeneyeClient(BizHawkClient):
                 if effect["effect_type"] == "goldeneye_trap":
                     writes = [(GOLDENEYE_TRAP_ADDRESS, bytes([1]), "RDRAM")]
                 elif effect["effect_type"] == "auto_fail_trap":
-                    # Native status evaluation uses saved flags when definitions are absent.
-                    # Mission startup restores both tables on the next attempt.
+                    # Fail this attempt without removing native objective text or conditions.
+                    # The status hook holds failure until mission startup clears the flag.
                     writes = [(OBJECTIVE_FLAG_BASE_ADDRESS,
                                u32_bytes(2) * (OBJECTIVE_FLAG_BLOCK_SIZE // 4), "RDRAM"),
-                              (OBJECTIVE_POINTER_BASE_ADDRESS, bytes(OBJECTIVE_FLAG_BLOCK_SIZE), "RDRAM")]
+                              (AUTO_FAIL_ADDRESS, u32_bytes(1), "RDRAM")]
                 else:
                     # Native currentPlayerEquipWeaponWrapper: animation, next, trigger.
                     # Replace a pending draw too, retaining magazines and inventory.
@@ -1222,24 +1227,27 @@ class GoldeneyeClient(BizHawkClient):
                                                         (0xEC998, 4, "ROM"), (0xECA80, 4, "ROM")])
         if ([bytes(value) for value in transport] !=
             [bytes.fromhex("2508f1508d090074"), bytes.fromhex("24010178"), bytes.fromhex("24010178")]):
-            logger.error("Rebuild the AP ROM with this package's patcher; its pickup table or mailbox reservation is outdated.")
+            logger.error("Rebuild the AP ROM with this package's patcher; its pickup table or mailbox reservation is outdated: %s",
+                         [bytes(value).hex() for value in transport])
             return False
 
         if CHEAT_EFFECTS:
             signatures = await bizhawk.read(ctx.bizhawk_ctx, [(0x03E378, 20, "ROM"),
-                (0xF4340, 4, "ROM"), (0x3E390, 4, "ROM")])
+                (0xF4340, 4, "ROM"), (0x3E390, 4, "ROM"), (0x8BD68, 8, "ROM")])
             if [bytes(value) for value in signatures] != [bytes.fromhex("3c088007010440219102965003e0000800000000"),
-                bytes.fromhex("0fc02657"), bytes.fromhex("8d09f214")]:
-                logger.error("Rebuild the ROM with this package's patcher; its DeathLink/cheat execution hook is outdated.")
+                bytes.fromhex("0fc02657"), bytes.fromhex("8d09f214"), bytes.fromhex("0bc026c300000000")]:
+                logger.error("Rebuild the ROM with this package's patcher; its trap/DeathLink/cheat execution hook is outdated.")
                 return False
 
         randomization_hooks = await bizhawk.read(ctx.bizhawk_ctx, [
             (0x58310, 4, "ROM"), (0x68D18, 4, "ROM"),
             (0x37314, 4, "ROM"), (0x86F10, 4, "ROM"),
             (0x3E404, 4, "ROM"),
+            (0x9A08, 4, "ROM"), (0xAEAD0, 4, "ROM"), (0xAEB94, 4, "ROM"),
         ])
         if [bytes(value).hex() for value in randomization_hooks] != [
-                "0fc02633", "0fc02641", "0fc02682", "0fc0269c", "240a4153"]:
+                "0fc02633", "0fc02641", "0fc02682", "0fc0269c", "240a4153",
+                "0bc026af", "0fc0264c", "0fc0263e"]:
             logger.error("Rebuild the AP ROM with this package's patcher; its randomization hooks are missing.")
             return False
         

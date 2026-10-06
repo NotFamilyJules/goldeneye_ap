@@ -29,3 +29,27 @@ u32 choose_weapon(u32 original) {
         return 0;
     return weapons[random_next() % 16];
 }
+
+/* Random-eye-zer's player constructor omits the separate head allocation for
+ * bodies with built-in heads. The vanilla player constructor assumes two
+ * models, unlike the enemy constructor. Keep its original layout otherwise.
+ */
+__attribute__((section(".bond_support")))
+u32 prepare_bond_body(u32 *frame, u32 file_id) {
+    u32 body_bytes = ((u32 (*)(u32))0x7F0BD188)(file_id);
+    if ((int)frame[0x40 / 4] >= 0)
+        return body_bytes;
+    u32 body_header = frame[0xFC / 4];
+    u32 buffer = frame[0xF0 / 4];
+    u32 offset = (body_bytes + 63) & ~63;
+    u32 animation = buffer + offset;
+    frame[0x38 / 4] = animation;
+    offset = (offset + 0xFB) & ~63;
+    ((void (*)(u32))0x7F075CF4)(body_header);
+    u32 count = *(short *)(body_header + 0x14) + 10;
+    frame[0xE8 / 4] = (offset + count * 4 + 63) & ~63;
+    ((void (*)(u32, u32, u32))0x7F075FAC)(animation, body_header, buffer + offset);
+    *(short *)(animation + 2) = count;
+    frame[0xF8 / 4] = 0;
+    return body_bytes;
+}

@@ -144,13 +144,13 @@ GoldenEye 007:
     'true': 0
 
   # Randomize Music
-  # Level songs will be randomized
+  # Level, intro and menu music will be randomized.
   randomize_music:
     'false': 50
     'true': 0
 
   # Randomize Enemies
-  # Enemy sprites will be randomized, but normal enemy position and behaviors will be the same
+  # Enemy and Bond models will be randomized. Enemy positions and behaviors stay the same.
   randomize_enemies:
     'false': 50
     'true': 0
@@ -167,9 +167,9 @@ GoldenEye 007:
     'false': 50
     'true': 0
 
-  # randomize_grunts
-  # Fatal Hit Sound Effects on guards will be randomized.
-  randomize_grunts:
+  # Randomize All SFX
+  # Shuffle all sound effects. Continuous sounds stay continuous. Overrides Randomize Gun SFX.
+  randomize_all_sfx:
     'false': 50
     'true': 0
 

@@ -1,6 +1,7 @@
 import hashlib
 import os
 import runpy
+import struct
 from pathlib import Path
 
 INPUT_ROM = r"C:\goldeneye_ap\GoldenEye 007 (U) [!].z64"
@@ -152,6 +153,26 @@ def patch_live_cheat_activation(patched):
         write_u32_be(patched, start + index * 4, word)
     address = 0x7F000000 + start - 0x34B30
     write_u32_be(patched, 0xF4340, 0x0C000000 | (address >> 2 & 0x3FFFFFF))
+
+def patch_auto_fail(patched):
+    # 1. Use the remaining replaced cheat-getter tail after the ownership helper.
+    start, end = 0x3E63C, 0x3E664
+    assert hashlib.sha256(patched[start:end]).hexdigest() == "86cac2ee408bb8c366c740eb44539e6c4c051ecc6e08e0a87589f5c290beabdb"
+    assert patched[0x8BD68:0x8BD70] == bytes.fromhex("27bdffd0afb30024")
+    # 2. Keep native definitions intact. Only the current attempt's flag overrides status.
+    words = [
+        0x3C088008,  # t0 = AP mailbox base
+        0x8D08F224,  # current attempt's Auto Fail flag
+        0x11000003, 0,
+        0x03E00008, 0x24020002,  # flagged: return failed
+        0x27BDFFD0, 0xAFB30024,  # original objective-status prologue
+        0x0BC15C90, 0,  # continue at 7F057240
+    ]
+    for index, word in enumerate(words):
+        write_u32_be(patched, start + index * 4, word)
+    write_u32_be(patched, 0x8BD68, 0x0BC026C3)  # jump to 7F009B0C
+    write_u32_be(patched, 0x8BD6C, 0)
+
 
 def patch_deathlink(patched):
     # 1. Use more of the same replaced cheat getter, before its existing hook.
@@ -846,6 +867,17 @@ def patch_randomization(rom):
         assert int.from_bytes(rom[offset:offset+4], "big") == original, hex(offset)
         rom[offset:offset+4] = (original + 0x40).to_bytes(4, "big")
 
+    # Random-eye-zer also reserves at least 2 MiB for stage textures. Moving
+    # the heap alone leaves Facility's 650 KiB texture pool exhausted by the
+    # extra bodies/heads. All vanilla stage budgets are below 2 MiB, so use
+    # that size for both the allocation and texInitPool's matching boundary.
+    for offset, original, replacement in (
+        (0x3BEA4, 0x8C849170, 0x3C040020),
+        (0x3BEB8, 0x8CC69170, 0x3C060020),
+    ):
+        assert int.from_bytes(rom[offset:offset+4], "big") == original, hex(offset)
+        rom[offset:offset+4] = replacement.to_bytes(4, "big")
+
     # 1. Verify that AP has replaced the cheat getter and left both tails free.
     assert rom[0x3E384:0x3E388] == bytes.fromhex("03e00008")
     for start, end, expected in (
@@ -867,20 +899,33 @@ def patch_randomization(rom):
     dynamic_appearance = wrapper(0xF300, 0x8007F444, 0x7F0234D0)
     setup_weapon = wrapper(0xF304, 0x8007F488, 0x7F005710)
     scripted_weapon = wrapper(0xF304, 0x8007F4EC, 0x7F052214)
-    death_sound = wrapper(0xF308, 0x8007F700, 0x70008E08)
-    death_sound[4] = 0x8FA70068  # Chr pointer saved by the native vocal routine.
-    # First enabled creation copies the 1024-byte payload from cartridge ROM.
+    bond_model = wrapper(0xF300, 0x8007F780, 0x7F09A464)
+    bond_head = [0x3C198007, jump(0x7F009A34), 0x3739F800]
+    all_sound = [0x3C198007, 0x3739F700, jump(0x7F009A34), 0]
+    frontend_music = [0x3C198007, 0x3739F740, jump(0x7F009A34), 0]
+    # Rockets bypass WeaponStats.Sound. Keep their native projectile handles;
+    # zero (no client yet) preserves the original sound argument.
+    rocket_sound = [0x3C088008, 0x9509F310, 0x11200002, 0,
+                    0x01202825, jump(0x70008E08), 0]
+    # First sound or enabled creation copies 1536 bytes from cartridge ROM.
     # This reserved BSS starts zeroed. Later calls find its first instruction.
-    loader = [0x3C08B0C0, 0x2508FC00, 0x3C098008, 0x2529F400,
-              0x8D2A0000, 0x15400007, 0x252B0400,
+    loader = [0x3C08B0C0, 0x2508F000, 0x3C098008, 0x2529F400,
+              0x8D2A0000, 0x15400007, 0x252B0600,
               0x8D0A0000, 0xAD2A0000, 0x25080004, 0x25290004,
               0x152BFFFB, 0, 0x03200008, 0]
     payload = (Path(__file__).parent / "native" / "enemy_randomization.bin").read_bytes()
-    assert len(payload) <= 0x400
-    assert rom[0xBFFC00:0xC00000] == bytes([255])*0x400
-    rom[0xBFFC00:0xC00000] = payload.ljust(0x400, b"\0")
-    blocks = ((0x3E3FC, setup_appearance), (0x3E434, dynamic_appearance),
-              (0x3E460, death_sound), (0x3E538, setup_weapon), (0x3E564, loader), (0x3E5A0, scripted_weapon))
+    assert len(payload) <= 0x600
+    assert rom[0xBFF000:0xBFF600] == bytes([255])*0x600
+    rom[0xBFF000:0xBFF600] = payload.ljust(0x600, b"\0")
+    # Identity mapping in generic/off ROMs. Room generation writes the shuffle.
+    assert rom[0xBFE800:0xBFE800+262*4] == bytes([255])*(262*4)
+    rom[0xBFE800:0xBFE800+262*4] = struct.pack(">262I", *range(262))
+    assert rom[0xBFED00:0xBFED00+63*4] == bytes([255])*(63*4)
+    rom[0xBFED00:0xBFED00+63*4] = struct.pack(">63I", *range(63))
+    blocks = ((0x3E3FC, setup_appearance), (0x3E428, bond_head), (0x3E434, dynamic_appearance),
+              (0x3E460, bond_model), (0x3E538, setup_weapon), (0x3E564, loader),
+              (0x3E5A0, scripted_weapon), (0x3E5CC, rocket_sound), (0x3E5EC, all_sound),
+              (0x3E5FC, frontend_music))
     for start, words in blocks:
         for index, word in enumerate(words):
             rom[start + index * 4:start + index * 4 + 4] = word.to_bytes(4, "big")
@@ -891,12 +936,26 @@ def patch_randomization(rom):
         (0x68D18, 0x0FC08D34, 0x3E434),
         (0x37314, 0x0FC015C4, 0x3E538),
         (0x86F10, 0x0FC14885, 0x3E5A0),
-        (0x5BCF4, 0x0C002382, 0x3E460),
-        (0x5BD5C, 0x0C002382, 0x3E460),
+        (0xAEAD0, 0x0FC26919, 0x3E460),
+        (0xAEB94, 0x0FC2F462, 0x3E428),
+        (0x3F794, 0x0C001B9F, 0x3E5FC),
+        (0x3FCA0, 0x0C001B9F, 0x3E5FC),
+        (0x405A8, 0x0C001B9F, 0x3E5FC),
+        (0x429B8, 0x0C001B9F, 0x3E5FC),
+        (0x452C8, 0x0C001B9F, 0x3E5FC),
+        (0x4AC18, 0x0C001B9F, 0x3E5FC),
+        (0x4D240, 0x0C001B9F, 0x3E5FC),
+        (0x628D8, 0x0C002382, 0x3E5CC),
+        (0x628FC, 0x0C002382, 0x3E5CC),
+        (0x94ABC, 0x0C002382, 0x3E5CC),
+        (0x94AE0, 0x0C002382, 0x3E5CC),
     ):
         assert int.from_bytes(rom[offset:offset + 4], "big") == original
         address = 0x7F000000 + helper - 0x34B30
         rom[offset:offset + 4] = jump(address, True).to_bytes(4, "big")
+
+    assert rom[0x9A08:0x9A10] == bytes.fromhex("27bdff803c0f8002")
+    rom[0x9A08:0x9A10] = struct.pack(">II", jump(0x7F009ABC), 0)
 
 #################################################################################################################################
 ############################################ OK NOW BUILD THE ROM ###############################################################
@@ -935,6 +994,7 @@ def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
     patch_key_watch_names(patched)
     patch_tank_entry(patched)
     patch_semantic_object_ownership(patched, data)
+    patch_auto_fail(patched)
     patch_native_handoff_feedback(patched)
 
     # Native helper behavior:

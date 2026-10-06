@@ -526,6 +526,7 @@ event.onframestart(function()
             write_u32(0x7F218, mission_attempt)
             write_u32(0x7F21C, 0)
             write_u32(0x7F220, 0)
+            write_u32(0x7F224, 0) -- Auto Fail belongs only to this mission attempt.
             write_u32(KEY_ITEM_FLAGS_MAILBOX_ADDR, 0)
             write_u32(KEY_ITEM_STATE_MAILBOX_ADDR, 0)
             mainmemory.writebyte(0x7F20B, 0) -- Intro skipping defaults off until slot options arrive.

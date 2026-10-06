@@ -174,7 +174,7 @@ class SkipCutscenes(Toggle):
 
 class RandomizeMusic(Toggle):
     """
-    Level songs will be randomized
+    Level, intro and menu music will be randomized.
     """
     display_name = "Randomize Music"
     default = 0
@@ -182,7 +182,7 @@ class RandomizeMusic(Toggle):
 
 class RandomizeEnemies(Toggle):
     """
-    Enemy sprites will be randomized, but normal enemy position and behaviors will be the same
+    Enemy and Bond models will be randomized. Enemy positions and behaviors stay the same.
     """
     display_name = "Randomize Enemies"
     default = 0
@@ -204,11 +204,11 @@ class RandomizeGunSfx(Toggle):
     default = 0
 
 
-class RandomizeGrunts(Toggle):
+class RandomizeAllSfx(Toggle):
     """
-    Fatal Hit Sound Effects on guards will be randomized.
+    Shuffle all sound effects. Continuous sounds stay continuous. Overrides Randomize Gun SFX.
     """
-    display_name = "randomize_grunts"
+    display_name = "Randomize All SFX"
     default = 0
 
 
@@ -272,7 +272,7 @@ class GoldeneyeOptions(PerGameCommonOptions):
     randomize_enemies:           RandomizeEnemies
     randomize_enemy_loadouts:    RandomizeEnemyLoadouts
     randomize_gun_sfx:           RandomizeGunSfx
-    randomize_grunts:            RandomizeGrunts
+    randomize_all_sfx:           RandomizeAllSfx
     goldeneye_trap:              GoldeneyeTrap
     holster_gun_trap:            HolsterGunTrap
     auto_fail_trap:              AutoFailTrap
@@ -298,7 +298,7 @@ GOLDENEYE_OPTION_GROUPS: Dict[str, List[type]] = {
         RandomizeEnemies,
         RandomizeEnemyLoadouts,
         RandomizeGunSfx,
-        RandomizeGrunts,
+        RandomizeAllSfx,
         DeathLinkOption,
     ],
     "Traps": [

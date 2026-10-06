@@ -76,35 +76,90 @@ scripted_weapon:
     nop
 
 .section .audio,"ax",@progbits
-.globl death_sfx
-death_sfx:
-    lw $t0,0x18($a3)
-    lbu $t0,0($t0)
-    addiu $t1,$zero,6
-    beq $t0,$t1,audio_original
-    nop
-    lwc1 $f4,0xfc($a3)
-    lwc1 $f6,0x100($a3)
-    c.le.s $f6,$f4
-    bc1f audio_original
-    nop
-    addiu $t0,$a1,-0x86
-    sltiu $t1,$t0,25
-    bne $t1,$zero,audio_lookup
-    nop
-    addiu $t0,$a1,-13
-    sltiu $t1,$t0,2
-    beq $t1,$zero,audio_original
-    nop
-    addiu $t0,$t0,25
-audio_lookup:
-    sll $t0,$t0,1
-    lui $t1,0x8008
-    addiu $t1,$t1,-0xce0
+.globl all_sfx
+all_sfx:
+    # snd.c's internal replay already contains the selected ID.
+    lui $t0,0x7001
+    addiu $t0,$t0,-0x7738
+    beq $ra,$t0,audio_original
+    sltiu $t0,$a1,262
+    beq $t0,$zero,audio_original
+    sll $t0,$a1,2
+    lui $t1,0xb0c0
+    addiu $t1,$t1,-0x1800
     addu $t1,$t1,$t0
-    lhu $a1,0($t1)
+    lw $a1,0($t1)
 audio_original:
+    # Displaced prologue of sndPlaySfx. Preserve bank, handle and return PC.
+    addiu $sp,$sp,-128
+    lui $t7,0x8002
     lui $t9,0x7000
-    ori $t9,$t9,0x8e08
+    ori $t9,$t9,0x8e10
     jr $t9
+    nop
+
+.section .music,"ax",@progbits
+.globl frontend_music
+frontend_music:
+    sll $t0,$a0,2
+    lui $t1,0xb0c0
+    addiu $t1,$t1,-0x1300
+    addu $t1,$t1,$t0
+    lw $a0,0($t1)
+    lui $t9,0x7000
+    ori $t9,$t9,0x6e7c
+    jr $t9
+    nop
+
+.section .bond,"ax",@progbits
+.globl bond_appearance
+bond_appearance:
+    addiu $sp,$sp,-32
+    sw $ra,28($sp)
+    lui $t9,0x7f09
+    ori $t9,$t9,0xa464
+    jalr $t9
+    nop
+    addiu $t0,$zero,1
+    bne $v0,$t0,bond_return
+    nop
+    lui $t9,0x7000
+    ori $t9,$t9,0xa450
+    jalr $t9
+    nop
+    lui $t0,0x8008
+    lw $t0,-0x5f50($t0)
+    andi $v0,$v0,7
+    sw $v0,0x41c($t0)
+    jal choose_appearance
+    nop
+    srl $t0,$v0,16
+    sll $t1,$v0,16
+    sra $t1,$t1,16
+    sw $t0,0x64($sp)
+    sw $t1,0x60($sp)
+    addiu $v0,$zero,1
+bond_return:
+    lw $ra,28($sp)
+    jr $ra
+    addiu $sp,$sp,32
+
+.section .bond_support_hooks,"ax",@progbits
+.globl bond_head_allocation
+bond_head_allocation:
+    addiu $sp,$sp,-32
+    sw $ra,28($sp)
+    or $a1,$a0,$zero
+    jal prepare_bond_body
+    addiu $a0,$sp,32
+    lw $t0,0x60($sp)
+    lw $ra,28($sp)
+    bgez $t0,bond_head_original
+    addiu $sp,$sp,32
+    lui $t9,0x7f07
+    ori $t9,$t9,0xa234
+    jr $t9
+    or $a3,$zero,$zero
+bond_head_original:
+    jr $ra
     nop

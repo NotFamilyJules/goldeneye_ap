@@ -4,10 +4,10 @@ Current build
 -------------
 Authoritative sources: test_build/goldeneye_apworld.
 Build: powershell -File test_build/build_native_enemy_code.ps1
-Then: python test_build/build_randomization_candidate.py
-Outputs: test_build/candidate_all_settings/GoldenEye AP Randomization Candidate.z64
-and its matching goldeneye.apworld. The older candidate_native_randomization
-folder remains a historical class-mapping snapshot.
+Then: python test_build/build_room_patch.py
+Room generation bundles that base patch and writes each slot's audio tables.
+Current isolated validation: test_build/extended_randomization_20261005.
+Older candidate folders are historical snapshots, not the current release.
 
 Requires an 8 MiB Expansion Pak. In BizHawk N64 sync settings, disable
 "Disable Expansion Slot" and restart the ROM. The isolated test runner makes
@@ -19,7 +19,9 @@ Options, all default off:
   randomize_enemy_loadouts
   randomize_music
   randomize_gun_sfx
-  randomize_grunts
+  randomize_all_sfx
+All SFX takes precedence over Gun SFX when both are enabled. Randomize Enemies
+also randomizes Bond's body/head and cuff variant. All five remain default off.
 The candidate_native_per_spawn folder preserves the earlier three-option build.
 
 Enemy flow
@@ -31,7 +33,7 @@ Music retains the previous independent AP-slot mapping.
 
 The four native ROM hooks check their switch. Disabled hooks tail-call the
 original function without drawing randomness. The first enabled hook copies
-1024 bytes of native code/data from ROM BFFC00..C00000 into 8007F400..8007F800.
+1536 bytes of native code/data from ROM BFF000..BFF600 into 8007F400..8007FA00.
 That ROM range was verified FF padding. The RAM is inside the already reserved
 portal-queue tail, not an allocation borrowed from the stage heap. The first
 instruction is initially zero in BSS and acts as the one-time load marker.
@@ -56,8 +58,24 @@ Use Random-eye-zer's 36-body pool and native male/female head pools. Each
 creation draws body % 36, then an appropriate separate head, or -1 for bodies
 with built-in heads. Model arguments AND caller body/head locals are updated.
 Character IDs, AI, positions, objective tags and AP check IDs remain native.
-Both setup and dynamic actors are covered. Bond's separate construction path
-is unchanged. The broad character hooks also cover scripted NPCs/allies.
+Both setup and dynamic actors are covered. The broad character hooks also
+cover scripted NPCs/allies. Bond's separate construction path is described below.
+
+Bond's model
+------------
+ROM AEAD0 calls wrapper 03E460 and payload 8007F780 in single player only.
+It chooses cuffs 0..7, then the same 36-body/compatible-head selection as the
+hack, and updates the original caller's body/head locals at sp+44/sp+40.
+The game still constructs and renders the actual model. This changes a 3D
+model, not a flat sprite or an enemy-class lookup. Multiplayer stays native.
+
+The vanilla player loader assumes a separate head. Random-eye-zer adds a
+built-in-head branch; simply passing head=-1 would index before the model
+table. ROM AEB94 now calls wrapper 03E428 / payload 8007F800. For a separate
+head it returns the original body-file length and continues normally. For
+head=-1 it copies the hack's body-only allocation and animation layout,
+sets the head-header pointer to NULL, and resumes at native 7F07A234.
+The support code is native/enemy_randomization.c:prepare_bond_body.
 
 Loadouts
 --------
@@ -103,18 +121,28 @@ All original delay slots remain. Each wrapper is 44 bytes. The ROM-copy helper
 is 60 bytes at ROM 03E564 / virtual 7F009A34. DeathLink's delay slot at 03E534
 and the surrounding AP cheat/ownership helpers are preserved.
 
-The client checks the four JAL signatures plus the new 4153 gate instruction.
+The client checks the enemy JAL signatures, the 4153 gate, global SFX entry
+and both Bond model/allocation hooks.
 Older clients use 4150 or 4152 and cannot enable this new payload accidentally. Current
 clients reject the old mapping ROM. Use matching package and ROM.
 
 Music
 -----
-Unchanged from the prior candidate: independent AP seed/slot mapping, fixed
-per mission selector table, no playback hooks. Primary cost fits 6344 bytes;
+Independent AP seed/slot mapping and a fixed per-mission selector table.
+Primary cost fits 6344 bytes;
 secondary cost fits 2000 bytes with 16 attempts and fallback 18 hex. Native
 secondary exceptions for stages 23/2B hex and -1 entries remain. Watch music
-and background sound fields remain native. Full audible transition tests are
-still outstanding.
+and background sound fields remain native.
+
+Intro (2), folders/menu (23) and intro swoosh sequence (44) are also donors
+and randomized recipients. Rom.py writes a 63-word table at ROM BFED00 from
+the independent frontend-music-v1 seed stream. Seven frontend calls at ROM
+03F794,03FCA0,0405A8,0429B8,0452C8,04AC18,04D240 enter wrapper 03E5FC and
+helper 8007F740, then tail-call musicTrack1Play(70006E7C) with the selection.
+Mission calls are not routed through this map, so music is not remapped twice.
+The intro works before client connection. Off uses an identity table.
+All slot-specific tables are outside the N64 checksum region; no room-specific
+checksum extension or host-side vanilla ROM is needed during generation.
 
 Verification
 ------------
@@ -125,13 +153,13 @@ Tests check all 36 body picks on both paths, 2560 weapon/hand/eligibility cases,
 caller locals, preserved arguments and stack/return address, all switch
 combinations, music budgets and exact AP patch isolation.
 
-Run python test_build/run_all_settings.py off
-Then appearances, loadouts, music, gun_sfx, grunts, and all --exercise separately.
+Run python test_build/run_extended_randomization.py off
+Current cases: appearances, loadouts, music, gun_sfx, all_sfx, and all.
 The connected fixture temporarily installs the candidate package, starts an
 isolated emulator/server/client, and restores the previous installed package.
 Its dynamic AI diagnostic lives at 07FA00/07FA40, beyond the native payload.
 
-See candidate_all_settings/TEST_RESULTS.json for current results and snapshots.
+See extended_randomization_20261005/TEST_RESULTS.json for current results.
 The earlier three-option results remain in candidate_native_per_spawn.
 Startup and synthetic AI probes do not establish full mission completion,
 post-death drops, AP pickup enforcement, or audible music continuity.
@@ -139,36 +167,65 @@ post-death drops, AP pickup enforcement, or audible music continuity.
 
 Weapon firing sounds
 --------------------
-The client writes only WeaponStats.Sound halfwords at guarded menu boundaries.
-The shared native getter serves player and enemy firing. Sixteen weapon entries
-(4..13 and 16..21) draw from finite, unchained sounds:
-002E 006A 006B 006D 006E 006F 0070 0071 0074 0075.
+The client writes firing selectors at guarded menu boundaries. Twenty-four
+WeaponStats.Sound entries cover IDs 4..22, 24, 31, 32, 35 and 36. The shared
+native getter serves player and enemy firing. The nineteen sound choices are:
+0001 000B 000C 002E 005C 005D 0064 006A 006B 006D 006E 006F 0070 0071
+0074 0075 0079 00E4 00FD. This includes rockets, grenade/tank launchers,
+watch/military lasers, shotgun and RC-P90. Native taser shot 0064 finishes;
+0065 is its held loop. Earlier research confused zero-based bank array indices
+with one-based playback IDs. No sound-bank or sample modification is required.
 Address = physical RDRAM 03267A + (weapon ID - 4) * 70 hex.
-Selections are stable for the AP seed/slot with a separate audio random stream.
-Off restores canonical defaults. RC-P90, chained shotgun and special weapon
-audio remain native. Timing, handles, AI hearing, damage and bank data are unchanged.
+Selections are stable for the AP seed/slot, using weapon-firing-audio-v2.
+Each enabled weapon excludes its own original sound from its choices.
+The watch laser's separate two-entry table at 80035E90 receives one shared
+selection; off restores 005C/005D. Rocket selector 8007F310 holds the selected
+sound, or 0001 when off. Its 28-byte helper at ROM 03E5CC / VA 7F009A9C
+replaces only a1 and tail-calls sndPlaySfx. Zero retains native a1 for a boot
+without a connected client. Player rocket calls 094ABC/094AE0 and enemy
+rocket calls 0628D8/0628FC enter this helper, retaining projectile handles.
+Off restores canonical defaults. Firing timing, handles, AI hearing, damage,
+reloads, impacts, explosions and bank data remain native. Grenades/mines and
+melee do not have gun firing reports; this option does not remap their other
+sound events. Source-only flare/piton stats are also covered by the table.
+Updated ROM AND client are needed for rocket coverage. Older ROMs have no
+rocket hook. Existing online rooms retain their old downloadable patch.
 
-Death grunts
-------------
-Gate: 8007F308 = 00004153. Map: 28 halfwords at 8007F320..8007F358.
-Male IDs 0086..009E are shuffled; female 000D/000E are shuffled separately.
-Female 000F chains another sound and is retained. Voices stay in their native
-gender pool. This also covers eligible allies/civilians, not just hostile guards.
-Native helper 8007F700 reads Chr.prop+type to exclude player type 6 and compares
-Chr.maxdamage (+100) <= Chr.damage (+FC). Nonfatal hits keep the original sound.
-ROM 05BCF4 and 05BD5C now JAL 7F009930 (word 0FC0264C). Wrapper at ROM 03E460
-loads the Chr saved at caller sp+68. Original sound-selecting delay slots remain.
-The helper tail-calls native sndPlaySfx 70008E08 with bank, handle and return
-address preserved. Native vocal counters and positional attenuation remain.
+Current fixture: run_extended_randomization.py CASE. Older audio trace scripts
+overwrite wrappers now used by global SFX/music and must only use their frozen
+historical snapshots. RAM 07F800 now belongs to the Bond allocation helper.
+
+All sound effects
+-----------------
+randomize_all_sfx replaces randomize_grunts. All 261 audible playback IDs
+(1..261) participate; zero remains silence. Runtime sndPlaySfx indexes the
+instrument at +12+ID*4, while its file array starts at +16. ID 261 is valid.
+Rom.py classifies complete chains: 241 self-finishing and 20 held effects.
+Each group is shuffled into a cycle, so every audible ID changes within its
+stop behavior. Chains, sample envelopes, handles and positional audio remain
+native. No weapon sound is excluded from the global map.
+
+Rom.py:build_rom_audio writes the 262-word table at ROM BFE800. The central
+sndPlaySfx entry at ROM 009A08 jumps to wrapper 03E5EC / native 8007F700.
+It maps a1, replays the displaced prologue and resumes at 70008E10. The
+internal sound replay caller 700088C8 bypasses mapping to avoid a second
+substitution. The old death-only hooks at 05BCF4/05BD5C are gone.
+Gun SFX selector writes restore vanilla when All SFX is enabled, so every
+sound receives exactly one substitution. The table works before connection.
+
+Existing rooms retain their older .apge and option names. Generate a new room
+with the matching current apworld to use this replacement option and the
+seeded intro/menu tracks. The generic ROM contains identity audio maps.
 
 Validation tools
 ----------------
 python -m unittest test_audio_randomization test_native_randomization test_deathlink_traps
 from test_build runs the emitted instruction tests and data/patch isolation.
-python test_build/run_all_settings.py CASE runs a connected cold-boot fixture;
-CASE: off, appearances, loadouts, music, gun_sfx, grunts, all.
-python test_build/run_audio_game.py CASE adds controlled native AI damage/attack
-and sound tracing to a SEPARATE diagnostic ROM, plus a WAV recording.
+python test_build/run_extended_randomization.py CASE runs a connected cold-boot fixture;
+CASE: off, appearances, loadouts, music, gun_sfx, all_sfx, all.
+The All SFX fixture uses native AI playback/stop commands and reads the live
+ALSound pointers. The appearances fixture forces Boris to exercise built-in
+heads and saves the Dam intro. This forcing exists only in that diagnostic ROM.
 The shipped candidate has no test tracing or artificial damage. See the
 candidate TEST_RESULTS.json for actual outcomes and remaining limitations.
 
@@ -178,3 +235,22 @@ The test harness terminates its emulator; raw combat.wav may have unfinished
 RIFF lengths. combat_finalized.wav and audio_sample.wav wrap the captured PCM
 in finalized WAV headers. Sound IDs are verified by native-call evidence;
 these recordings still benefit from human listening for balance and character.
+
+Facility texture correction, 2026-10-05
+--------------------------------------
+The original port expanded the stage heap but omitted Random-eye-zer's
+minimum 2 MiB texture pool (hack VA 7F007470..7F007484). Facility retained
+its 650 KiB budget. With independently randomized bodies/heads it reached
+1,160 bytes free, below texLoad's 2,600/4,300-byte minimum. The native
+out-of-space path substitutes the pool start address as texture data.
+This produces corrupt textures immediately, including on equipped hats.
+
+USA ROM 03BEA4: 8C849170 -> 3C040020 (allocation size = 2 MiB).
+USA ROM 03BEB8: 8CC69170 -> 3C060020 (same texInitPool boundary).
+The fixed Facility run retained 862,264 bytes free after loading. This
+matches the original hack's effective budget for vanilla stage settings.
+Character and hat selections are unchanged. Native global 'bytes' still
+contains the original stage budget; the actual pool bounds use 2 MiB.
+Room download base_patch.bsdiff4 must be rebuilt for these ROM edits.
+An already generated room contains its older patch until regenerated;
+a separately corrected ROM can retain the existing room identity.
