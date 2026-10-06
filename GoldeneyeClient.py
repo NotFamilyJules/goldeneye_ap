@@ -213,12 +213,6 @@ PROGRESSIVE_GUN_ITEM_IDS = list(WEAPON_ITEM_DEFS.keys())
 RANDOMIZATION_ADDRESS = 0x7F300
 MUSIC_TABLE_ADDRESS = 0x4EB10
 MAGIC = 0x4153
-FIRING_POOL = (0x01, 0x0B, 0x0C, 0x2E, 0x5C, 0x5D, 0x64, 0x6A, 0x6B,
-               0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x74, 0x75, 0x79, 0xE4, 0xFD)
-FIRING_DEFAULTS = ((4,107),(5,46),(6,112),(7,106),(8,109),(9,110),
-                   (10,117),(11,46),(12,109),(13,113),(14,253),(15,121),
-                   (16,116),(17,46),(18,111),(19,117),(20,107),(21,107),
-                   (22,228),(24,12),(31,100),(32,11),(35,12),(36,12))
 
  # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
  # # # # # # # # # # # # # # # FUNCTIONS AND HELPERS SECTION # # # # # # # # # # # # # # # #
@@ -836,26 +830,6 @@ def build_live_inventory_add_weapon_writes(snapshot, bonddata_pointer, weapon_id
 
 # Randomization Functions
 
-def build_firing_sounds(slot_data):
-    # 1. Select firing sounds, including native shotgun chains and P90 loops.
-    # Native ID 0x64 is the finite taser shot; 0x65 is its held loop.
-    stream = randomization_stream(slot_data["Seed"], slot_data["Slot"], "weapon-firing-audio-v2")
-    enabled = (slot_data["options"].get("randomize_gun_sfx", 0)
-               and not slot_data["options"].get("randomize_all_sfx", 0))
-    writes = []
-    for weapon, original in FIRING_DEFAULTS:
-        sound = stream.choice([sound for sound in FIRING_POOL if sound != original]) if enabled else original
-        writes.append((0x3267A + (weapon - 4) * 0x70, struct.pack(">H", sound), "RDRAM"))
-
-    # 2. The watch laser and rocket use separate native playback paths.
-    watch_sound = stream.choice([sound for sound in FIRING_POOL if sound not in (0x5C, 0x5D)])
-    writes.append((0x35E90, struct.pack(">HH", watch_sound, watch_sound) if enabled
-                   else struct.pack(">HH", 0x5C, 0x5D), "RDRAM"))
-    rocket_sound = stream.choice([sound for sound in FIRING_POOL if sound != 1]) if enabled else 1
-    writes.append((0x7F310, struct.pack(">H", rocket_sound), "RDRAM"))
-    return writes
-
-
 def randomization_stream(seed, slot, feature):
     encoded = json.dumps(["goldeneye-randomization-v1", str(seed), str(slot), feature],
                          separators=(",", ":")).encode()
@@ -1327,7 +1301,7 @@ class GoldeneyeClient(BizHawkClient):
                 await bizhawk.guarded_write(ctx.bizhawk_ctx, [
                     (RANDOMIZATION_ADDRESS, randomization_block, "RDRAM"),
                     (MUSIC_TABLE_ADDRESS, music_table, "RDRAM"),
-                ] + build_firing_sounds(ctx.slot_data), [(SCREEN_ID_ADDRESS, randomization_screen, "RDRAM")])
+                ], [(SCREEN_ID_ADDRESS, randomization_screen, "RDRAM")])
 
             # Update unlocked levels in game
             await bizhawk.write(ctx.bizhawk_ctx, [(UNLOCK_BASE_ADDRESS, unlock_block, "RDRAM"),])

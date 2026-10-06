@@ -38,12 +38,14 @@ now includes a separate `.apge` for each GoldenEye player. Upload the generated
 game to a room or distribute those patches to players. The seed host does not
 need a base ROM; only players need one when applying their patches.
 
-All five randomizer options default off: appearances, enemy loadouts,
-music, gun sounds, and All SFX. Appearances includes Bond's model and cuffs.
-Music includes the intro and main menus. All SFX replaces death grunts and
-shuffles every audible sound ID, keeping continuous sounds in a separate
-pool. All SFX overrides Gun SFX when both are enabled. The patched ROM always
-requires the 8 MiB Expansion Pak.
+Appearances, enemy loadouts, music, and SFX randomization default off.
+Appearances includes Bond's model and cuffs. Music includes intro and menus.
+Set `sfx_randomization` to `weapons_only`, `catagories`, `true_random`, or `off`.
+Weapons Only includes attacks, slappers, throws, reloads, clicks and equip sounds.
+Categories separates gunfire/explosions/impacts, voices, ricochets/flybys,
+casings, machinery/ambience, and electronics/interface. Equip, reloads and
+clicks join electronics/interface. True Random shuffles all sound effects.
+Continuous sounds keep their stop behavior. The ROM requires the 8 MiB Expansion Pak.
 
 Generate a new room with the updated world to use these changes. Its `.apge`
 contains the sound map and intro/menu music choices, so those work before the
