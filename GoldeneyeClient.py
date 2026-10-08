@@ -93,6 +93,7 @@ import struct
 import hashlib
 import random
 import asyncio
+import time
 import pkgutil
 import subprocess
 import textwrap
@@ -117,6 +118,8 @@ logger = logging.getLogger("Client")
 BONDDATA_pointer_ADDRESS = 0x7A0B0
 SCREEN_ID_ADDRESS = 0x2A8C0
 NEXT_MENU_ADDRESS = 0x2A8C8  # Native menu request, consumed by menu_init.
+CLEARED_MISSIONS_ADDRESS = 0x7F240
+CLEARED_MISSION_LABEL = "your\ndid it"  # Two lines fit the film frame; at most 22 ASCII bytes.
 MISSION_ID_ADDRESS = 0x2A8F8
 DIFFICULTY_ADDRESS = 0x2A8FC
 UNLOCK_BASE_ADDRESS = 0x7F000
@@ -169,6 +172,7 @@ DEATH_REQUEST_ADDRESS = 0x7F21C
 INCOMING_DEATH_ADDRESS = 0x7F220
 CAMERA_MODE_ADDRESS = 0x36494
 GOLDENEYE_TRAP_ADDRESS = 0x36444
+GOLDENEYE_TRAP_TIMER_ADDRESS = 0x7999C
 
 #   Key Item Receive Constants #
 
@@ -300,7 +304,47 @@ def get_active_clear_location_id(ctx, mission, difficulty_code):
         return mission["shared_clear_location_id"]
     return mission["clear_location_ids"][difficulty_code] # player chose per difficulty clear
 
+
+def build_cleared_mission_labels(ctx, last_clear_mission=None):
+    # 1. Use server-confirmed clears, including progress received on reconnect.
+    cleared = bytearray(len(MISSIONS))
+    checked = ctx.checked_locations or set()
+    for mission in MISSIONS:
+        locations = ([mission["shared_clear_location_id"]]
+                     if ctx.slot_data["options"]["mission_clear_mode"] == 2
+                     else mission["clear_location_ids"].values())
+        index = mission["unlock_byte_offset"]
+        if any(location in checked for location in locations):
+            cleared[index] = 2 if index == last_clear_mission else 1
+
+    # 2. Leave room in the native 24-byte label buffer for its newline and terminator.
+    label = CLEARED_MISSION_LABEL.encode("ascii")
+    if len(label) > 22 or any(value != 10 and not 32 <= value <= 126 for value in label):
+        raise ValueError("CLEARED_MISSION_LABEL must contain at most 22 ASCII bytes, using printable text or newlines.")
+    return bytes(cleared) + label.ljust(24, b"\0")
+
 #   Key Item Receive Functions #
+
+def build_loadout_tracker(ctx):
+    # 1. Hide the tracker when native item pickups are enabled.
+    snapshot = {"type": "LOADOUT_TRACKER", "enabled": ctx.slot_data["options"]["item_shuffle"] != 3,
+                "missions": []}
+    if not snapshot["enabled"]:
+        return snapshot
+
+    # 2. Use the same received items and generated mission data as the loadout.
+    owned_items = {item.item for item in ctx.items_received}
+    for mission in sorted(MISSIONS, key=lambda entry: entry["unlock_byte_offset"]):
+        items = []
+        for item_id, gadget in client_data.LOADOUT_GADGETS.items():
+            if mission["name"] in gadget["missions"] and gadget["item_id"] in mission["base_loadout_ids"]:
+                items.append({"name": gadget["item_name"], "owned": item_id in owned_items})
+        for key in mission["key_items"]:
+            items.append({"name": key["item_name"].split(" (")[0],
+                          "owned": key["ap_item_id"] in owned_items})
+        snapshot["missions"].append({"name": mission["name"], "items": items})
+    return snapshot
+
 
 def build_key_item_receive_state(items_received, mission):
 #~~~~~~ Stage 1: Find the AP items the player owns ~~~~~~#
@@ -1165,25 +1209,6 @@ class GoldeneyeClient(BizHawkClient):
         if shown:
             self.ap_messages.pop(0)
 
-    def on_package(self, ctx, cmd, args):
-        # Keep reconnects quiet; a different room/slot starts a fresh message queue.
-        if cmd == "Connected":
-            identity = (ctx.server_seed_name, ctx.team, ctx.slot)
-            if identity != self.ap_message_session:
-                self.ap_message_session = identity
-                self.ap_messages.clear()
-                self.ap_message_seen.clear()
-        if cmd == "PrintJSON":
-            self.queue_ap_message(ctx, args)
-        if cmd == "ReceivedItems" and args["index"] > 0:
-            for index in range(args["index"], args["index"] + len(args["items"])):
-                self.trap_attempts[index] = self.live_attempt
-        # 1. Standard BizHawk networking dispatches server-relayed DeathLink here.
-        if (cmd == "Bounced" and "DeathLink" in args.get("tags", [])
-            and ctx.slot_data and ctx.slot_data["options"].get("death_link", 0)
-            and args["data"]["source"] != ctx.player_names[ctx.slot]):
-            async_start(self.receive_deathlink(ctx, self.live_attempt))
-
     async def receive_deathlink(self, ctx, attempt):
         # 2. Never retain an event for a different attempt or a later living state.
         state = await self.read_mission_state(ctx)
@@ -1213,6 +1238,27 @@ class GoldeneyeClient(BizHawkClient):
                 await ctx.send_death(f"{ctx.player_names[ctx.slot]}'s Bond died.")
         return state
 
+    # | AP Receipts and Traps | #
+
+    def on_package(self, ctx, cmd, args):
+        # Keep reconnects quiet; a different room/slot starts a fresh message queue.
+        if cmd == "Connected":
+            identity = (ctx.server_seed_name, ctx.team, ctx.slot)
+            if identity != self.ap_message_session:
+                self.ap_message_session = identity
+                self.ap_messages.clear()
+                self.ap_message_seen.clear()
+        if cmd == "PrintJSON":
+            self.queue_ap_message(ctx, args)
+        if cmd == "ReceivedItems" and args["index"] > 0:
+            for index in range(args["index"], args["index"] + len(args["items"])):
+                self.trap_attempts[index] = self.live_attempt
+        # 1. Standard BizHawk networking dispatches server-relayed DeathLink here.
+        if (cmd == "Bounced" and "DeathLink" in args.get("tags", [])
+            and ctx.slot_data and ctx.slot_data["options"].get("death_link", 0)
+            and args["data"]["source"] != ctx.player_names[ctx.slot]):
+            async_start(self.receive_deathlink(ctx, self.live_attempt))
+
     async def receive_traps(self, ctx, state):
         # 1. Reuse indexed delivery storage, with a cursor for nondeferred effects.
         key = json.dumps([ctx.server_seed_name, ctx.team, ctx.slot, "traps"])
@@ -1225,8 +1271,16 @@ class GoldeneyeClient(BizHawkClient):
                 continue
             # 2. History and out-of-level receipts are consumed, never queued.
             if state["living"] and attempt == state["attempt"]:
+                guards = state["guards"]
                 if effect["effect_type"] == "goldeneye_trap":
-                    writes = [(GOLDENEYE_TRAP_ADDRESS, bytes([1]), "RDRAM")]
+                    flag, = await bizhawk.read(ctx.bizhawk_ctx, [(GOLDENEYE_TRAP_ADDRESS, 4, "RDRAM")])
+                    # An active effect keeps its native schedule; repeated receipts do not stack.
+                    if int.from_bytes(flag, "big") != 0:
+                        continue
+                    # Native mission reset clears the flag, but retains the old deadline.
+                    guards = guards + [(GOLDENEYE_TRAP_ADDRESS, flag, "RDRAM")]
+                    writes = [(GOLDENEYE_TRAP_TIMER_ADDRESS, u32_bytes(0), "RDRAM"),
+                              (GOLDENEYE_TRAP_ADDRESS, u32_bytes(1), "RDRAM")]
                 elif effect["effect_type"] == "auto_fail_trap":
                     # Fail this attempt without removing native objective text or conditions.
                     # The status hook holds failure until mission startup clears the flag.
@@ -1246,7 +1300,7 @@ class GoldeneyeClient(BizHawkClient):
                         writes.extend([(base + 0x28, u32_bytes(5), "RDRAM"),
                                        (base + 0x3C, u32_bytes(weapon), "RDRAM"),
                                        (base + 0x44, u32_bytes(0), "RDRAM")])
-                applied = await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, state["guards"])
+                applied = await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, guards)
                 # logger.info("GoldenEye trap index=%d %s: %s", index, effect["item_name"], "applied" if applied else "transition ignored")
             # else:
                 # logger.info("GoldenEye trap index=%d %s: history/outside mission ignored", index, effect["item_name"])
@@ -1295,6 +1349,11 @@ class GoldeneyeClient(BizHawkClient):
                 "0bc026af", "0fc0264c", "0fc0263e"]:
             logger.error("Rebuild the AP ROM with this package's patcher; its randomization hooks are missing.")
             return False
+
+        menu_hook = await bizhawk.read(ctx.bizhawk_ctx, [(0x430AC, 8, "ROM"), (0xBFF54C, 4, "ROM")])
+        if [bytes(value) for value in menu_hook] != [bytes.fromhex("3c1980073739f940"), bytes.fromhex("1120000c")]:
+            logger.error("Rebuild the AP ROM; its completed mission label hook is missing.")
+            return False
         
         # CTX = Client Context Object. A ctx is a live Archipelago client state object that is passed through this code.
         ctx.game = self.game
@@ -1312,8 +1371,13 @@ class GoldeneyeClient(BizHawkClient):
         self.last_startup_ready_mission = None
         self.previous_freestanding_mission_id = None
 
+        self.tracker_state = None
+        self.tracker_next_heartbeat = 0
         self.previous_items_received_count = None   # keep track of how many AP items we've already handled for live receives
         self.previous_server_checked_locations = None
+        self.mission_clear_session = None
+        self.last_clear_mission = None
+        self.last_clear_shown = False
         self.live_attempt = None
         self.death_attempt = None
         self.death_handled = False
@@ -1328,6 +1392,7 @@ class GoldeneyeClient(BizHawkClient):
         
         # Handle the case that if game_watcher is None, continue and don't crash
         if ctx.server is None or ctx.server.socket.closed or ctx.slot_data is None:
+            self.tracker_state = None
             return
 
         try:
@@ -1356,6 +1421,25 @@ class GoldeneyeClient(BizHawkClient):
                     ctx.finished_game = True
 
             server_checked_locations = sorted(int(location_id) for location_id in (checked_locations or []))
+            # Keep a new clear pending until its first mission-select visit.
+            clear_session = json.dumps([ctx.server_seed_name, ctx.team, ctx.slot])
+            if clear_session != self.mission_clear_session:
+                self.mission_clear_session = clear_session
+                self.last_clear_mission = persistent_load().get("goldeneye_pending_clear", {}).get(clear_session)
+                self.last_clear_shown = False
+                self.previous_server_checked_locations = server_checked_locations
+            new_checks = set(server_checked_locations) - set(self.previous_server_checked_locations or [])
+            new_clears = []
+            for mission in MISSIONS:
+                locations = ([mission["shared_clear_location_id"]]
+                             if ctx.slot_data["options"]["mission_clear_mode"] == 2
+                             else mission["clear_location_ids"].values())
+                if any(location in new_checks for location in locations):
+                    new_clears.append(mission["unlock_byte_offset"])
+            if len(new_clears) == 1:
+                self.last_clear_mission = new_clears[0]
+                self.last_clear_shown = False
+                persistent_store("goldeneye_pending_clear", clear_session, self.last_clear_mission)
             if server_checked_locations != self.previous_server_checked_locations:
                 # logger.debug("GoldenEye server checked locations=%s", server_checked_locations)
                 self.previous_server_checked_locations = server_checked_locations
@@ -1371,12 +1455,20 @@ class GoldeneyeClient(BizHawkClient):
             # Never change a live mission's creation rules or audio selectors.
             randomization_screen = bytes((await bizhawk.read(ctx.bizhawk_ctx,
                 [(SCREEN_ID_ADDRESS, 4, "RDRAM")]))[0])
-            if int.from_bytes(randomization_screen, "big") in (4, 5, 6, 7, 8, 9, 10):
+            menu_screen = int.from_bytes(randomization_screen, "big")
+            if menu_screen != 7 and self.last_clear_shown:
+                self.last_clear_mission = None
+                self.last_clear_shown = False
+            if menu_screen in (4, 5, 6, 7, 8, 9, 10):
                 randomization_block, music_table = build_randomization(ctx.slot_data)
-                await bizhawk.guarded_write(ctx.bizhawk_ctx, [
+                published = await bizhawk.guarded_write(ctx.bizhawk_ctx, [
                     (RANDOMIZATION_ADDRESS, randomization_block, "RDRAM"),
                     (MUSIC_TABLE_ADDRESS, music_table, "RDRAM"),
+                    (CLEARED_MISSIONS_ADDRESS, build_cleared_mission_labels(ctx, self.last_clear_mission), "RDRAM"),
                 ], [(SCREEN_ID_ADDRESS, randomization_screen, "RDRAM")])
+                if published and menu_screen == 7 and self.last_clear_mission is not None and not self.last_clear_shown:
+                    self.last_clear_shown = True
+                    persistent_store("goldeneye_pending_clear", clear_session, None)
 
             # Update unlocked levels in game
             await bizhawk.write(ctx.bizhawk_ctx, [(UNLOCK_BASE_ADDRESS, unlock_block, "RDRAM"),])
@@ -1395,6 +1487,19 @@ class GoldeneyeClient(BizHawkClient):
             screen_id = int.from_bytes(reads[0], "big")
             mission_id = int.from_bytes(reads[1], "big")
             selected_difficulty = int.from_bytes(reads[2], "big")
+            if screen_id == 7:
+                tracker_state = (ctx.server_seed_name, ctx.team, ctx.slot,
+                                 ctx.slot_data["options"]["item_shuffle"], len(ctx.items_received))
+                now = time.monotonic()
+                if tracker_state != self.tracker_state:
+                    await bizhawk.send_requests(ctx.bizhawk_ctx, [build_loadout_tracker(ctx)])
+                    self.tracker_state = tracker_state
+                    self.tracker_next_heartbeat = now + 2
+                elif now >= self.tracker_next_heartbeat:
+                    await bizhawk.send_requests(ctx.bizhawk_ctx, [{"type": "LOADOUT_TRACKER"}])
+                    self.tracker_next_heartbeat = now + 2
+            else:
+                self.tracker_state = None
             
             failed_or_aborted = int.from_bytes(reads[3], "big")
             bond_kia = int.from_bytes(reads[4], "big")
@@ -1969,6 +2074,7 @@ class GoldeneyeClient(BizHawkClient):
                         self.pending_success_objectives.clear()
 
         except bizhawk.RequestFailedError:
+            self.tracker_state = None
             self.last_startup_ready_mission = None
             self.previous_freestanding_mission_id = None
             return

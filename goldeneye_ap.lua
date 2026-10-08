@@ -1,3 +1,112 @@
+-- Player setting: false disables the loadout tracker. F8 toggles it while running.
+local ENABLE_LOADOUT_TRACKER = true
+
+---------------------------------------------------------------------------------------------------------------------------------------
+-- LOADOUT TRACKER: AP data stays in Lua; this section never writes game memory.
+---------------------------------------------------------------------------------------------------------------------------------------
+local tracker = {enabled = false, missions = {}}
+local tracker_updated = 0
+local tracker_visible = true
+local tracker_key_down = false
+local tracker_dirty = true
+local tracker_drawn = false
+local tracker_frame = 0
+local tracker_view = {}
+
+local function receive_loadout_tracker(snapshot)
+    if snapshot.missions then
+        tracker = snapshot
+        tracker_dirty = true
+    end
+    tracker_updated = os.time()
+end
+
+event.onframestart(function()
+    tracker_frame = (tracker_frame + 1) % 15
+    local key_down = input.get().F8 == true
+    if key_down and not tracker_key_down then tracker_visible = not tracker_visible end
+    tracker_key_down = key_down
+
+    if not ENABLE_LOADOUT_TRACKER or not tracker_visible or not tracker.enabled
+        or os.time() - tracker_updated > 5
+        or mainmemory.read_u32_be(0x02A8C0) ~= 0x07 then
+        if tracker_drawn then gui.clearGraphics("client") end
+        tracker_drawn = false
+        tracker_dirty = true
+        return
+    end
+    if not tracker_dirty and tracker_frame ~= 0 then return end
+
+    -- Legacy map-square positions: five columns, four rows.
+    local origin = client.transformPoint(0, 0)
+    local corner = client.transformPoint(client.bufferwidth(), client.bufferheight())
+    if not tracker_dirty and tracker_view[1] == origin.x and tracker_view[2] == origin.y
+        and tracker_view[3] == corner.x and tracker_view[4] == corner.y then return end
+    tracker_view = {origin.x, origin.y, corner.x, corner.y}
+    tracker_dirty = false
+    tracker_drawn = true
+    gui.clearGraphics("client")
+    local width, height = corner.x - origin.x, corner.y - origin.y
+    local left_edges = {0.10, 0.26, 0.42, 0.58, 0.735}
+    local top_edges = {0.13, 0.34, 0.55, 0.76}
+    local tile_width, tile_height = width * 0.145, height * 0.12
+    local short_names = {
+        ["Goldeneye Operations Manual"] = "GE Op Manual",
+        ["Key Analyzer Case"] = "Key Analyzer",
+        ["Computer Room Keycard"] = "Computer Key",
+        ["Security Room Keycard"] = "Security Key",
+        ["Interrogation Room Key"] = "Room Key",
+        ["I/O Circuit Board"] = "I/O Board",
+        ["CPU Circuit Board"] = "CPU Board",
+        ["RSP Circuit Board"] = "RSP Board",
+        ["RDP Circuit Board"] = "RDP Board",
+        ["Keycard Level 1"] = "Keycard L1",
+        ["Keycard Level 2"] = "Keycard L2",
+        ["Keycard Level 3"] = "Keycard L3",
+    }
+
+    -- Choose one compact size that fits even the busiest map square.
+    local font = width / 105
+    for _, mission in ipairs(tracker.missions) do
+        local count = #mission.items
+        if count > 0 then
+            local columns = count > 5 and 2 or 1
+            local rows = math.ceil(count / columns)
+            for _, item in ipairs(mission.items) do
+                local length = #(short_names[item.name] or item.name)
+                font = math.min(font,
+                    (tile_width / columns - width * 0.004) / (length * 0.55),
+                    tile_height / (rows * 1.25))
+            end
+        end
+    end
+    font = math.max(1, math.floor(font))
+    local line_height = font * 1.25
+
+    for index, mission in ipairs(tracker.missions) do
+        local count = #mission.items
+        if count > 0 then
+            local columns = count > 5 and 2 or 1
+            local rows = math.ceil(count / columns)
+            local column_width = tile_width / columns
+            local left = origin.x + left_edges[(index - 1) % 5 + 1] * width
+            local top = origin.y + top_edges[math.floor((index - 1) / 5) + 1] * height
+            for item_index, item in ipairs(mission.items) do
+                local column = math.floor((item_index - 1) / rows)
+                local row = (item_index - 1) % rows
+                gui.drawText(math.floor(left + column * column_width),
+                    math.floor(top + row * line_height), short_names[item.name] or item.name,
+                    item.owned and 0xFF00FF00 or 0xFF707070, 0x60000000,
+                    font, "Arial", item.owned and "bold" or "regular", "left", "top", "client")
+            end
+        end
+    end
+end)
+
+---------------------------------------------------------------------------------------------------------------------------------------
+-- END LOADOUT TRACKER
+---------------------------------------------------------------------------------------------------------------------------------------
+
 ---------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------- BIZHAWK TO ARCHIPELAGO CONNECTION BLOCK ---------------------------------------------------
 ---------------------------------------------------------------------------------------------------------------------------------------
@@ -70,6 +179,9 @@ function send_receive ()
                 for pending = i + 1, #data do response_list[pending] = response_list[i] end
                 break
             end
+        elseif data[i]["type"] == "LOADOUT_TRACKER" then
+            receive_loadout_tracker(data[i])
+            response_list[i] = {type = "LOADOUT_TRACKER_RESPONSE"}
         elseif data[i]["type"] == "WRITE" then
             memory.write_bytes_as_array(data[i]["address"], base64.decode(data[i]["value"]), data[i]["domain"])
             response_list[i] = {type = "WRITE_RESPONSE"}
@@ -411,7 +523,7 @@ end
 -- target.kind values:
 -- 1 - Single weapon pickup; uses a token.	[Dam Sniper Rifle (code.gen line 512)]
 -- 2 - Retained source prop, including tagged weapons; tracks attachment to Bond.
--- 3 - Grouped weapon pickups sharing one location; uses tokens.	[Bunker 2’s six Throwing Knives (code.gen line 523)]
+-- 3 - Grouped weapon pickups sharing one location; uses tokens.	[Bunker 2ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢s six Throwing Knives (code.gen line 523)]
 -- 4 - Supplies: native type 21 armor uses the native acquisition hook;
 --     type 7 magazines also use native acquisition; type 20 boxes use tokens.
 
@@ -541,8 +653,11 @@ event.onframestart(function()
     last_mission_id = mission_id
     last_bond_base = bond_base
 
-    if prev_screen_id == 0x0C and screen_id ~= 0x0C and screen_id ~= 0x07 then  -- if you try to go the next level
-        mainmemory.write_u32_be(0x2A8C0, 0x07)                                  -- get fucked
+    -- Let the player read both native debrief pages before returning to the map.
+    -- Leaving either page must not advance directly into an AP-locked mission.
+    if (prev_screen_id == 0x0C or prev_screen_id == 0x0D)
+        and screen_id ~= 0x0C and screen_id ~= 0x0D and screen_id ~= 0x07 then
+        mainmemory.write_u32_be(0x2A8C0, 0x07)
     end
     prev_screen_id = screen_id
 

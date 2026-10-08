@@ -3,6 +3,7 @@ import os
 import runpy
 import struct
 import zlib
+import zopfli.zlib
 from pathlib import Path
 
 INPUT_ROM = r"C:\goldeneye_ap\GoldenEye 007 (U) [!].z64"
@@ -183,10 +184,9 @@ def patch_text_replacements(rom, original_text, replacement_text):
 
 # 4. Recompress the edited bank and restore GoldenEye's header.
 
-    compressed_bank = b"\x11\x72" + zlib.compress(
-        text_bank, level=9, wbits=-15
-    )
-    # level=9 asks for maximum compression. wbits=-15 produces the raw format we decompressed earlier. b"\x11\x72" restores GoldenEye’s two-byte header.
+    compressed_bank = b"\x11\x72" + zopfli.zlib.compress(bytes(text_bank), numiterations=15)[2:-4]
+    # Remove Zopfli's two-byte zlib header and four-byte checksum, leaving raw DEFLATE.
+    # GoldenEye uses that same compressed format with its own 11 72 header.
 
 # 5. Check that the compressed bank fits.
 
@@ -953,6 +953,40 @@ def jump(address, link=False):
     return (0x0C000000 if link else 0x08000000) | ((address >> 2) & 0x03FFFFFF)
 
 
+def patch_completed_mission_labels(rom):
+    # 1. Use the last reserved payload space, already copied by the native loader.
+    start = 0xBFF540  # Loaded at 0x8007F940, after the existing payload.
+    words = [
+        0x3C088008,  # t0 = mailbox base (signed offsets below)
+        0x01134821,  # t1 = base + s3, the native mission index (0..19)
+        0x9129F240,  # read this mission's AP-confirmed clear flag
+        0x1120000C, 0,  # unchanged label/color when not cleared
+        0x3C1500FF,  # s5 = green; native drawing adds its two alpha values
+        0x240A0002,  # only the latest clear has flag 2; older clears retain their names
+        0x152A0008, 0,
+        0x2509F254,  # t1 = replacement label
+        0x02405025,  # t2 = native 24-byte label buffer
+        0x912B0000,  # copy one byte, including the terminator
+        0x25290001,
+        0xA14B0000,
+        0x1560FFFC,
+        0x254A0001,
+        0x3C0F8005,  # original language flag load and branch
+        0x8DEF84D0,
+        0x15E00005, 0,
+        0x3C197F00, 0x3739E58C, 0x03200008, 0,  # normal uppercase conversion
+        0x3C197F00, 0x3739E5C4, 0x03200008, 0,  # native alternate-language path
+    ]
+    payload = struct.pack(f">{len(words)}I", *words)
+    assert start + len(payload) <= 0xBFF600
+    assert rom[start:start + len(payload)] == bytes(len(payload))
+    rom[start:start + len(payload)] = payload
+
+    # 2. After native name lookup, run the label hook through the existing loader.
+    assert rom[0x430AC:0x430BC] == bytes.fromhex("3c0f80058def84d015e0000f00000000")
+    rom[0x430AC:0x430BC] = struct.pack(">IIII", 0x3C198007, 0x3739F940, jump(0x7F009A34), 0)
+
+
 def patch_randomization(rom):
     # Random-eye-zer moves boot/thread stacks, framebuffers and the TLB arena
     # up 4 MiB. These exact instruction pairs were checked against both ROMs.
@@ -1067,6 +1101,112 @@ def patch_randomization(rom):
 ############################################ OK NOW BUILD THE ROM ###############################################################
 #################################################################################################################################
 
+# Native completion with active cheats.
+def patch_native_completion(patched):
+    # 1. Verify the US completion routine and the writer's difficulty loop.
+    start, end = 0x51ECC, 0x52030
+    assert hashlib.sha256(patched[start:end]).hexdigest() == "3cae94e0498637490a7b6b44143b91771c28f1807ec797856977d875cf927d48"
+    assert patched[0x5323C:0x53244] == bytes.fromhex("100000062610ffff")
+
+    # 2. Keep the caller's objective check and reject failure, abort and death.
+    # Record real seconds through the native save writer; cheats stay active.
+    # Only non-cheat runs reach native timed-cheat unlocking.
+    words = [
+        # Save the native caller and working registers.
+        0x27BDFFD8,  # addiu $sp,$sp,-40
+        0xAFBF0024,  # sw $ra,36($sp)
+        0xAFB00020,  # sw $s0,32($sp)
+        0xAFB1001C,  # sw $s1,28($sp)
+        0xAFB20018,  # sw $s2,24($sp)
+        # Read native ending state.
+        0x3C108003,  # lui $s0,0x8003
+        0x3C088007,  # lui $t0,0x8007
+        0xAD009790,  # sw $zero,-26736($t0)
+        0x8E08A924,  # lw $t0,-22236($s0)
+        0x8E09A928,  # lw $t1,-22232($s0)
+        0x01094025,  # or $t0,$t0,$t1
+        0x15000031,  # bnez $t0,finish
+        # Require a mission and an ordinary difficulty.
+        0x8E08A8F8,  # lw $t0,-22280($s0)
+        0x0500002F,  # bltz $t0,finish
+        0x8E12A8FC,  # lw $s2,-22276($s0)
+        0x2E490003,  # sltiu $t1,$s2,3
+        0x1120002C,  # beqz $t1,finish
+        0x000848C0,  # sll $t1,$t0,3
+        0x01284823,  # subu $t1,$t1,$t0
+        0x00094880,  # sll $t1,$t1,2
+        0x01304821,  # addu $t1,$t1,$s0
+        # Resolve the native mission index.
+        0x8D31ABF8,  # lw $s1,-21512($t1)
+        # Record actual elapsed seconds.
+        0x0FC22FEE,  # jal 0x7f08bfb8
+        0x00000000,  # nop
+        0x2408003C,  # addiu $t0,$zero,60
+        0x0048001A,  # div $zero,$v0,$t0
+        0x00003812,  # mflo $a3
+        0x8E04A8E8,  # lw $a0,-22296($s0)
+        0x02202825,  # move $a1,$s1
+        0x0FC0797E,  # jal 0x7f01e5f8
+        0x02403025,  # move $a2,$s2
+        # Cheated runs stop before native cheat unlocking.
+        0x8E08A900,  # lw $t0,-22272($s0)
+        0x1500001C,  # bnez $t0,finish
+        0x00000000,  # nop
+        # Keep the normal target-time test.
+        0x0FC22FEE,  # jal 0x7f08bfb8
+        0x00000000,  # nop
+        0x2408003C,  # addiu $t0,$zero,60
+        0x0048001A,  # div $zero,$v0,$t0
+        0x00004012,  # mflo $t0
+        0x00114840,  # sll $t1,$s1,1
+        0x01314821,  # addu $t1,$t1,$s1
+        0x00094840,  # sll $t1,$t1,1
+        0x00125040,  # sll $t2,$s2,1
+        0x012A4821,  # addu $t1,$t1,$t2
+        0x01304821,  # addu $t1,$t1,$s0
+        0x8529B564,  # lh $t1,-19100($t1)
+        0x0128402A,  # slt $t0,$t1,$t0
+        0x1500000D,  # bnez $t0,finish
+        0x8E04A8E8,  # lw $a0,-22296($s0)
+        # Keep the normal native cheat reward.
+        0x0FC07771,  # jal 0x7f01ddc4
+        0x00000000,  # nop
+        0x00402025,  # move $a0,$v0
+        0x0FC07748,  # jal 0x7f01dd20
+        0x02202825,  # move $a1,$s1
+        0x14400006,  # bnez $v0,finish
+        0x8E04A8E8,  # lw $a0,-22296($s0)
+        0x0FC079D8,  # jal 0x7f01e760
+        0x02202825,  # move $a1,$s1
+        0x3C088007,  # lui $t0,0x8007
+        0x24090001,  # addiu $t1,$zero,1
+        0xAD099790,  # sw $t1,-26736($t0)
+        # Return to the original mission-exit caller.
+        0x8FBF0024,  # lw $ra,36($sp)
+        0x8FB00020,  # lw $s0,32($sp)
+        0x8FB1001C,  # lw $s1,28($sp)
+        0x8FB20018,  # lw $s2,24($sp)
+        0x03E00008,  # jr $ra
+        0x27BD0028,  # addiu $sp,$sp,40
+        # The writer visits only the played difficulty when cheats are active.
+        0x3C088003,  # lui $t0,0x8003
+        0x8D08A900,  # lw $t0,-22272($t0)
+        0x11000003,  # beqz $t0,ordinary_difficulty
+        0x00000000,  # nop
+        0x0BC079CC,  # j 0x7f01e730
+        0x00000000,  # nop
+        0x0BC079CA,  # j 0x7f01e728
+        0x2610FFFF,  # addiu $s0,$s0,-1
+    ]
+    payload = struct.pack(f">{len(words)}I", *words)
+    assert len(payload) <= end - start
+    patched[start:end] = payload.ljust(end - start, b"\x00")
+
+    # 3. Preserve normal lower-difficulty credit, but do not add it for cheats.
+    write_u32_be(patched, 0x5323C, jump(0x7F01D4A8))
+    write_u32_be(patched, 0x53240, 0)
+
+
 def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
     if sha1_bytes(rom) != "abe01e4aeb033b6c0836819f549c791b26cfde83":
         raise SystemExit("Expected the verified vanilla USA ROM; do not stack ROM patches.")
@@ -1133,8 +1273,10 @@ def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
     patch_armor_locations(patched)
     patch_unrandomized_ammo_boxes(patched)
     patch_mission_intro_skip(patched)
+    patch_native_completion(patched)
     if randomization_hooks:
         patch_randomization(patched)
+        patch_completed_mission_labels(patched)
 
 #############################################################################################################################
 ################################################ DIALOG REPLACEMENTS ########################################################
@@ -1212,12 +1354,101 @@ def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
         "Trevelyan: Gee, hope I don't die\n",
     )
 
+### Harry Potter Reference ###
+
+    patch_text_replacements(
+        patched,
+        "Valentin: Good evening, Mr. Bond.\n"
+        "           These are strange times...\n",
+        "Hagrid: Rubeus Hagrid, Keeper of\n"
+        "        Keys and Grounds at Hogwarts.\n"
+    )
+
+    patch_text_replacements(
+        patched,
+        "Bond: With an ex-KGB agent meeting\n"
+        "        an MI6 operative in the middle\n"
+        "        of St. Petersburg?\n",
+        "Hagrid: Of course you know\n"
+        "        all about Hogwarts.\n"
+    )
+
+    patch_text_replacements(
+        patched,
+        "Valentin: Ha! I never thought I'd find\n"
+        "           myself helping you, but things\n"
+        "           have changed in Russia.\n",
+        "Bond: Valentin, that movie won't\n"
+        "     be released for another\n" 
+        "     four years from now.\n"
+    )
+
+    patch_text_replacements(
+        patched,
+        "Valentin: Janus will meet you by Lenin's\n"
+        "           statue. Beware him, he's a Lienz\n"
+        "           Cossack traitor.\n",
+        "Hagrid: Yer a wizard, Harry.\n"
+    )
+
+    patch_text_replacements(
+        patched,
+        "Valentin: Now I must leave - the guards\n"
+        "           are out in force and I fear they\n"
+        "           may mistake me for a spy!\n",
+        "Bond: Okay you said the line. You\n"
+        "      can fuck off now.\n"
+    )
+
+    patch_quick_select(patched)
     update_n64_header_checksums(patched)
     return bytes(patched)
 
 #################################################################################################################################
-#################################################### EXECUTE ROM CHANGES ########################################################
+#################################################### NATIVE QUICK SELECT #######################################################
 #################################################################################################################################
+
+def patch_quick_select(rom):
+    # 1. Verify the three US prologues and the existing reserved-tail loader.
+    native = Path(__file__).parent / "native"
+    symbols = {}
+    for line in (native / "quick_select_hooks_symbols.txt").read_text().splitlines():
+        fields = line.split()
+        if len(fields) == 3:
+            symbols[fields[2]] = int(fields[0], 16) & 0xFFFFFFFF
+    for address, expected, name in (
+        (0x7F00625C, "3c0280082442a0b08c4f000027bdffe8", "quick_select_init_hook"),
+        (0x7F081974, "27bdfe40f7b400304480a000afbf003c", "quick_select_input_hook"),
+        (0x7F08A5FC, "3c0280088c42a0b027bdffa0afbf0034", "quick_select_render_hook"),
+    ):
+        offset = address - 0x7F000000 + 0x34B30
+        assert rom[offset:offset + 16] == bytes.fromhex(expected), name
+        target = symbols[name]
+        rom[offset:offset + 16] = struct.pack(">4I", 0x3C190000 | (target >> 16),
+            0x37390000 | (target & 0xFFFF), 0x0BC0268D, 0)
+    assert read_u32_be(rom, 0x3E57C) == 0x252B0600
+    write_u32_be(rom, 0x3E57C, 0x252B0B80)
+    assert read_u32_be(rom, 0x3E568) == 0x2508F000
+    write_u32_be(rom, 0x3E568, 0x2508B000)
+    # 2. Relocate the loader source; keep its reserved RAM tail and zeroed state pointer.
+    hooks = (native / "quick_select_hooks.bin").read_bytes()
+    assert len(hooks) <= 0x560
+    # Keep the room identity at BFF800 free. Relocate the combined loader source.
+    assert rom[0xBFB000:0xBFBB80] == b"\xff" * 0xB80
+    rom[0xBFB000:0xBFB600] = rom[0xBFF000:0xBFF600]
+    rom[0xBFB600:0xBFBB80] = hooks.ljust(0x580, b"\0")
+    assert rom[0xBFF800:0xBFFC00] == b"\xff" * 0x400
+    # 3. Stage code and labels occupy verified cartridge padding, not live assets.
+    payload = (native / "quick_select.bin").read_bytes()
+    assert len(payload) <= 0x2000
+    assert rom[0xBFC000:0xBFE200] == b"\xff" * 0x2200
+    rom[0xBFC000:0xBFE000] = payload.ljust(0x2000, b"\0")
+    for offset, label in ((0, "WEAPONS"), (32, "GADGETS/KEYS"), (64, "Empty"),
+                          (80, ">"), (112, "R: EQUIP"),
+                          (144, "[PASSIVE]"), (176, "DUAL  R: EQUIP")):
+        text = label.encode("ascii") + b"\0"
+        rom[0xBFE000 + offset:0xBFE000 + offset + len(text)] = text
+
 
 def main() -> None:
     rom = read_file(INPUT_ROM)

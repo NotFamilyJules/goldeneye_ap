@@ -1,0 +1,2 @@
+.equ QUICK_INPUT, 0
+.equ QUICK_RENDER, 3436

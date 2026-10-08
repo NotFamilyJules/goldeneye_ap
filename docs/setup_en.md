@@ -66,6 +66,20 @@ does not skip endings, deaths, dialogue, or objective scenes. Received cheat
 items unlock native menu entries; choose them before starting a mission.
 Cheat-unlock checks require successful runs with cheats off.
 
+## Loadout tracker
+
+With Item Shuffle enabled, the Lua overlay lists each mission's keys and loadout gadgets over its map square on mission select. Bold green means received from AP;
+regular dark grey means not yet received. All maps use the same font and size. The list covers the mission across difficulties.
+It does not list general weapons or ammunition.
+
+Press F8 to hide or show it during play. To disable it by default, set
+`ENABLE_LOADOUT_TRACKER = false` at the top of `goldeneye_ap.lua` and reload
+the script. Dense lists use two columns. Text scales with the window and stays inside each map square.
+The overlay redraws only when its data, visibility, or window size changes.
+The client sends ownership changes and a small heartbeat every two seconds.
+Use the updated client and Lua together; the client sends the tracker data
+over their existing connection. No new ROM patch is needed.
+
 ## Building the world package
 
 After changing the ROM patcher or its native payload, run
