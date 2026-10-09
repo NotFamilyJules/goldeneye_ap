@@ -3,11 +3,10 @@ import os
 import runpy
 import struct
 import zlib
-import zopfli.zlib
 from pathlib import Path
 
-INPUT_ROM = r"C:\goldeneye_ap\GoldenEye 007 (U) [!].z64"
-OUTPUT_ROM = r"C:\goldeneye_ap\test_build\Goldeneye 007 AP ROM.z64"
+INPUT_ROM = Path(__file__).resolve().parents[2] / "baseline/GoldenEye 007 (U) [!].z64"
+OUTPUT_ROM = Path(__file__).resolve().parents[1] / "Goldeneye 007 AP ROM.z64"
 
 
 
@@ -184,8 +183,8 @@ def patch_text_replacements(rom, original_text, replacement_text):
 
 # 4. Recompress the edited bank and restore GoldenEye's header.
 
-    compressed_bank = b"\x11\x72" + zopfli.zlib.compress(bytes(text_bank), numiterations=15)[2:-4]
-    # Remove Zopfli's two-byte zlib header and four-byte checksum, leaving raw DEFLATE.
+    compressed_bank = b"\x11\x72" + zlib.compress(bytes(text_bank), level=9)[2:-4]
+    # Remove zlib's two-byte header and four-byte checksum, leaving raw DEFLATE.
     # GoldenEye uses that same compressed format with its own 11 72 header.
 
 # 5. Check that the compressed bank fits.
@@ -1360,45 +1359,9 @@ def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
         patched,
         "Valentin: Good evening, Mr. Bond.\n"
         "           These are strange times...\n",
-        "Hagrid: Rubeus Hagrid, Keeper of\n"
-        "        Keys and Grounds at Hogwarts.\n"
+        "Hagrid: Yer a wizard Harry.\n"
     )
 
-    patch_text_replacements(
-        patched,
-        "Bond: With an ex-KGB agent meeting\n"
-        "        an MI6 operative in the middle\n"
-        "        of St. Petersburg?\n",
-        "Hagrid: Of course you know\n"
-        "        all about Hogwarts.\n"
-    )
-
-    patch_text_replacements(
-        patched,
-        "Valentin: Ha! I never thought I'd find\n"
-        "           myself helping you, but things\n"
-        "           have changed in Russia.\n",
-        "Bond: Valentin, that movie won't\n"
-        "     be released for another\n" 
-        "     four years from now.\n"
-    )
-
-    patch_text_replacements(
-        patched,
-        "Valentin: Janus will meet you by Lenin's\n"
-        "           statue. Beware him, he's a Lienz\n"
-        "           Cossack traitor.\n",
-        "Hagrid: Yer a wizard, Harry.\n"
-    )
-
-    patch_text_replacements(
-        patched,
-        "Valentin: Now I must leave - the guards\n"
-        "           are out in force and I fear they\n"
-        "           may mistake me for a spy!\n",
-        "Bond: Okay you said the line. You\n"
-        "      can fuck off now.\n"
-    )
 
     patch_quick_select(patched)
     update_n64_header_checksums(patched)
