@@ -1,4 +1,10 @@
-"""Archipelago room downloads contain patches"""
+# NOT WHAT MAKES CORE PATCHES TO THE ROM OR THE ROM ITSELF #
+
+# This file is for making seed/options specific changes to the GoldenEye 007 ROM.
+# This includes randomizing sound effects and music based on the provided slot data.
+# This script defines the patch metadata for the Archipelago ROM,
+# Then finally outputs a .apge file the player will play from.
+
 import hashlib
 import json
 import os
@@ -11,18 +17,20 @@ from .GoldeneyeClient import randomization_stream
 from .randomization_tables import MUSIC_BYTES, MUSIC_POOL
 
 
-# Complete native chains containing an indefinite envelope. All other nonzero
+# Dound effects that are not finite and loop forever. All other nonzero
 # bank entries finish by themselves, even when their sample has a loop.
 HELD_SFX = (58, 59, 60, 62, 65, 66, 67, 101, 102, 161,
             162, 163, 193, 194, 204, 216, 218, 225, 246, 255)
 
 # Shared watch-laser/ricochet IDs stay with ricochets, including their firing use.
-# Unknown IDs 44, 103, 205, 206, 207, 254 await listening/classification.
-# ID 104 shares its native waveform with body-fall IDs 130..132.
+# UNKNOWN IDS: 44, 103, 205, 206, 207, 254
+# ID 104 is the same as body-fall sfx IDs 130..132.
 WEAPON_SFX = (1, 3, 4, 5, 6, 11, 12, 45, 46, 47, 48, 49, 50, 89,
               95, 96, 97, 100, 101, 105, *range(106, 120), 121,
               228, 232, 233, 234, 235, 241, 242, 243, 253)
 WEAPON_HANDLING_SFX = (45, 50, 89, 232, 233, 234, 235, 241, 242, 243)
+
+# SFX categories for players who don't want adhd simulator 64
 SFX_CATEGORIES = {
     "gunfire_explosions_impacts": (
         *(sound for sound in WEAPON_SFX if sound not in WEAPON_HANDLING_SFX),
@@ -31,12 +39,16 @@ SFX_CATEGORIES = {
         224, 230, 231, 239, 240, 261),
     "voices": (13, 14, 15, 54, 55, 56, 57, 68, 84, 98, 99,
                *range(134, 159), 183, 257),
-    "ricochets_flybys": (*range(19, 43), 91, 92, 93, *range(164, 169)),
+    
+    # Ricochets and flybys are extremely disorientating if not only shuffled within their own category.
+    "ricochets_flybys": (*range(19, 43), 91, 92, 93, *range(164, 169)), 
     "casings": (90, 122),
+
     "machinery_ambience": (7, 8, 9, 51, 52, 53, *range(58, 68), 102, 187,
                            188, *range(191, 198), *range(199, 205), 210, 211,
                            214, 215, 216, 218, 219, 222, 223, 225, 226,
                            *range(248, 253)),
+                           
     "electronics_interface": (*WEAPON_HANDLING_SFX, 10, 16, 17, 18, 43, *range(77, 84), 85, 86,
                               87, 88, 94, 159, 160, 161, 162, 163, 184, 186,
                               189, 190, 198, 227, 229, 236, 237, 238, 244,
