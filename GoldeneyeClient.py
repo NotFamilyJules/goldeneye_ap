@@ -1120,7 +1120,7 @@ async def read_inventory_snapshot(ctx, bonddata_pointer):       # What do bond's
 
 # | AP Item Messages | #
 AP_MESSAGE_TEMPLATES = {
-    "received": "{item} received from {player}",
+    "received": "Got {item} from {player}",
     "sent": "{item} sent to {player}",
 }
 AP_MESSAGE_LINE_WIDTH = 28
@@ -1370,6 +1370,7 @@ class GoldeneyeClient(BizHawkClient):
         self.pending_success_objectives = set() # keeping track of success-only objectives
         self.last_startup_ready_mission = None
         self.previous_freestanding_mission_id = None
+        self.last_published_mission = None
 
         self.tracker_state = None
         self.tracker_next_heartbeat = 0
@@ -1393,6 +1394,7 @@ class GoldeneyeClient(BizHawkClient):
         # Handle the case that if game_watcher is None, continue and don't crash
         if ctx.server is None or ctx.server.socket.closed or ctx.slot_data is None:
             self.tracker_state = None
+            self.last_published_mission = None
             return
 
         try:
@@ -1516,6 +1518,18 @@ class GoldeneyeClient(BizHawkClient):
                 return
 
             if screen_id == SCREEN_GAMEPLAY and mission is not None:
+
+                # Send auto-tab switch flag for PopTracker hook
+                if mission_id != self.last_published_mission:
+                    await ctx.send_msgs([{
+                        "cmd": "Set",
+                        "key": f"GoldenEye_007_{ctx.team}_{ctx.slot}_mission",
+                        "default": 0,
+                        "want_reply": True,
+                        "operations": [{"operation": "replace", "value": mission_id}],
+                    }])
+                    self.last_published_mission = mission_id
+                
                 # Publish intro skipping before loadout readiness, which needs native hand ticks.
                 tank = client_data.TANKS_BY_MISSION_NAME.get(mission["name"])
                 tank_owned = tank is not None and any(item.item == tank["ap_item_id"] for item in ctx.items_received)
