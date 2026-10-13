@@ -1,3 +1,4 @@
+
 from typing import TYPE_CHECKING
 from worlds.generic.Rules import add_rule
 from .client_data import WEAPON_ITEM_DEFS
@@ -23,7 +24,7 @@ def has_weapon(state, player: int, weapon_name: str) -> bool:
     # 1. Preserve direct weapon ownership in either mode.
     if state.has(weapon_name, player):
         return True
-    # 2. Progressive ownership must reach this weapon's runtime position. Currently Klobb which = 1.
+    # 2. Progressive ownership must reach this weapon's runtime position.
     return (
         state.multiworld.worlds[player].options.progressive_weapons.value == 1
         and state.has(PROGRESSIVE_GUN_ITEM_NAME, player,
@@ -2598,16 +2599,28 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: state.has('Depot', player))
     if "Depot - Safe Key" in world.location_name_to_id and is_valid_location(world, "Depot - Safe Key"):
         add_rule(world.multiworld.get_location("Depot - Safe Key", player),
-                 lambda state: state.has('Depot', player))
+                 lambda state: (
+                     state.has('Depot', player) and
+                     state.has('Depot Safe Key (Depot)', player)
+                 ))
     if "Depot - Safe Key (Agent)" in world.location_name_to_id and is_valid_location(world, "Depot - Safe Key (Agent)"):
         add_rule(world.multiworld.get_location("Depot - Safe Key (Agent)", player),
-                 lambda state: state.has('Depot', player))
+                 lambda state: (
+                     state.has('Depot', player) and
+                     state.has('Depot Safe Key (Depot)', player)
+                 ))
     if "Depot - Safe Key (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Depot - Safe Key (Double Agent)"):
         add_rule(world.multiworld.get_location("Depot - Safe Key (Double Agent)", player),
-                 lambda state: state.has('Depot', player))
+                 lambda state: (
+                     state.has('Depot', player) and
+                     state.has('Depot Safe Key (Depot)', player)
+                 ))
     if "Depot - Safe Key (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Depot - Safe Key (Secret Agent)"):
         add_rule(world.multiworld.get_location("Depot - Safe Key (Secret Agent)", player),
-                 lambda state: state.has('Depot', player))
+                 lambda state: (
+                     state.has('Depot', player) and
+                     state.has('Depot Safe Key (Depot)', player)
+                 ))
     if "Depot - Secret Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Depot - Secret Agent (Clear)"):
         add_rule(world.multiworld.get_location("Depot - Secret Agent (Clear)", player),
                  lambda state: (

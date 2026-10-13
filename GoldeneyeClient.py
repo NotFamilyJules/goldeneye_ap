@@ -1517,19 +1517,20 @@ class GoldeneyeClient(BizHawkClient):
                     (MISSION_ID_ADDRESS, reads[1], "RDRAM")])
                 return
 
-            if screen_id == SCREEN_GAMEPLAY and mission is not None:
-
-                # Send auto-tab switch flag for PopTracker hook
-                if mission_id != self.last_published_mission:
+            if screen_id == 7 or (screen_id == SCREEN_GAMEPLAY and mission is not None):
+                published_mission = 0 if screen_id == 7 else mission_id
+                if published_mission != self.last_published_mission:
                     await ctx.send_msgs([{
                         "cmd": "Set",
                         "key": f"GoldenEye_007_{ctx.team}_{ctx.slot}_mission",
                         "default": 0,
                         "want_reply": True,
-                        "operations": [{"operation": "replace", "value": mission_id}],
+                        "operations": [{"operation": "replace", "value": published_mission}],
                     }])
-                    self.last_published_mission = mission_id
-                
+                    self.last_published_mission = published_mission
+
+            if screen_id == SCREEN_GAMEPLAY and mission is not None:
+
                 # Publish intro skipping before loadout readiness, which needs native hand ticks.
                 tank = client_data.TANKS_BY_MISSION_NAME.get(mission["name"])
                 tank_owned = tank is not None and any(item.item == tank["ap_item_id"] for item in ctx.items_received)
