@@ -1517,17 +1517,17 @@ class GoldeneyeClient(BizHawkClient):
                     (MISSION_ID_ADDRESS, reads[1], "RDRAM")])
                 return
 
-            if screen_id == 7 or (screen_id == SCREEN_GAMEPLAY and mission is not None):
-                published_mission = 0 if screen_id == 7 else mission_id
-                if published_mission != self.last_published_mission:
-                    await ctx.send_msgs([{
-                        "cmd": "Set",
-                        "key": f"GoldenEye_007_{ctx.team}_{ctx.slot}_mission",
-                        "default": 0,
-                        "want_reply": True,
-                        "operations": [{"operation": "replace", "value": published_mission}],
-                    }])
-                    self.last_published_mission = published_mission
+            # Return PopTracker to Select whenever gameplay ends.
+            published_mission = mission_id if screen_id == SCREEN_GAMEPLAY and mission is not None else 0
+            if published_mission != self.last_published_mission:
+                await ctx.send_msgs([{
+                    "cmd": "Set",
+                    "key": f"GoldenEye_007_{ctx.team}_{ctx.slot}_mission",
+                    "default": 0,
+                    "want_reply": True,
+                    "operations": [{"operation": "replace", "value": published_mission}],
+                }])
+                self.last_published_mission = published_mission
 
             if screen_id == SCREEN_GAMEPLAY and mission is not None:
 
