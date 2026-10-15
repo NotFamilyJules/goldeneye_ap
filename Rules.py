@@ -795,7 +795,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
@@ -806,7 +806,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
@@ -885,7 +885,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard A (Bunker 2)', player)
                  ))
     if "Bunker 2 - Casualty List (Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Casualty List (Agent)"):
@@ -916,53 +916,53 @@ def set_rules(world: "GoldeneyeWorld") -> None:
         add_rule(world.multiworld.get_location("Bunker 2 - Cell Key 1", player),
                  lambda state: (
                      state.has('Bunker 2', player) and
-                     state.has('Watch Magnet', player)
+                     state.has('Watch Magnet', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player)
                  ))
     if "Bunker 2 - Cell Key 1 (Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Cell Key 1 (Agent)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Cell Key 1 (Agent)", player),
                  lambda state: (
                      state.has('Bunker 2', player) and
-                     state.has('Watch Magnet', player)
+                     state.has('Watch Magnet', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player)
                  ))
     if "Bunker 2 - Cell Key 1 (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Cell Key 1 (Double Agent)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Cell Key 1 (Double Agent)", player),
                  lambda state: (
                      state.has('Bunker 2', player) and
-                     state.has('Watch Magnet', player)
+                     state.has('Watch Magnet', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player)
                  ))
     if "Bunker 2 - Cell Key 1 (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Cell Key 1 (Secret Agent)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Cell Key 1 (Secret Agent)", player),
                  lambda state: (
                      state.has('Bunker 2', player) and
-                     state.has('Watch Magnet', player)
+                     state.has('Watch Magnet', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player)
                  ))
     if "Bunker 2 - Cell Key 2" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Cell Key 2"):
         add_rule(world.multiworld.get_location("Bunker 2 - Cell Key 2", player),
                  lambda state: (
                      state.has('Bunker 2', player) and
-                     state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player)
+                     state.has('Watch Magnet', player)
                  ))
     if "Bunker 2 - Cell Key 2 (Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Cell Key 2 (Agent)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Cell Key 2 (Agent)", player),
                  lambda state: (
                      state.has('Bunker 2', player) and
-                     state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player)
+                     state.has('Watch Magnet', player)
                  ))
     if "Bunker 2 - Cell Key 2 (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Cell Key 2 (Double Agent)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Cell Key 2 (Double Agent)", player),
                  lambda state: (
                      state.has('Bunker 2', player) and
-                     state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player)
+                     state.has('Watch Magnet', player)
                  ))
     if "Bunker 2 - Cell Key 2 (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Cell Key 2 (Secret Agent)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Cell Key 2 (Secret Agent)", player),
                  lambda state: (
                      state.has('Bunker 2', player) and
-                     state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player)
+                     state.has('Watch Magnet', player)
                  ))
     if "Bunker 2 - Cheat - 2x Throwing Knives" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Cheat - 2x Throwing Knives"):
         add_rule(world.multiworld.get_location("Bunker 2 - Cheat - 2x Throwing Knives", player),
@@ -979,7 +979,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard A (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
                      state.has('Staff List (Bunker 2)', player) and
@@ -990,7 +990,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard A (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
                      state.has('Staff List (Bunker 2)', player) and
@@ -1001,7 +1001,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard A (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
                      state.has('Staff List (Bunker 2)', player) and
@@ -1012,7 +1012,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
                      has_gun(state, player)
                  ))
@@ -1021,7 +1021,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
                      has_gun(state, player)
                  ))
@@ -1030,7 +1030,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
                      has_gun(state, player)
                  ))
@@ -1039,7 +1039,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player) and
                      state.has('Keycard A (Bunker 2)', player) and
@@ -1056,7 +1056,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player)
                  ))
@@ -1065,7 +1065,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player)
                  ))
@@ -1074,7 +1074,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player)
                  ))
@@ -1083,7 +1083,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player)
                  ))
@@ -1184,7 +1184,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player)
                  ))
     if "Bunker 2 - Recover CCTV Tape (Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Recover CCTV Tape (Agent)"):
@@ -1192,7 +1192,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player)
                  ))
     if "Bunker 2 - Recover CCTV Tape (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Recover CCTV Tape (Double Agent)"):
@@ -1200,7 +1200,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player)
                  ))
     if "Bunker 2 - Recover CCTV Tape (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Recover CCTV Tape (Secret Agent)"):
@@ -1208,7 +1208,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player)
                  ))
     if "Bunker 2 - Recover Goldeneye Operations Manual" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Recover Goldeneye Operations Manual"):
@@ -1216,7 +1216,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
                      state.has('Safe Key 1 (Bunker 2)', player) and
                      state.has('Safe Key 2 (Bunker 2)', player) and
@@ -1227,7 +1227,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
                      state.has('Safe Key 1 (Bunker 2)', player) and
                      state.has('Safe Key 2 (Bunker 2)', player) and
@@ -1294,7 +1294,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 1 (Bunker 2)', player) and
+                     state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player) and
                      state.has('Keycard A (Bunker 2)', player) and
@@ -4274,14 +4274,12 @@ def set_rules(world: "GoldeneyeWorld") -> None:
         add_rule(world.multiworld.get_location("Surface 1 - (Clear)", player),
                  lambda state: (
                      state.has('Surface 1', player) and
-                     state.has('Hut Door Key (Surface 1)', player) and
                      has_gun(state, player)
                  ))
     if "Surface 1 - Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Agent (Clear)"):
         add_rule(world.multiworld.get_location("Surface 1 - Agent (Clear)", player),
                  lambda state: (
                      state.has('Surface 1', player) and
-                     state.has('Hut Door Key (Surface 1)', player) and
                      has_gun(state, player)
                  ))
     if "Surface 1 - Ammo Container - Grenade Rounds - Grenade Launcher Hut" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Ammo Container - Grenade Rounds - Grenade Launcher Hut"):
@@ -4415,19 +4413,34 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: state.has('Surface 1', player))
     if "Surface 1 - Hut Door Key" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Hut Door Key"):
         add_rule(world.multiworld.get_location("Surface 1 - Hut Door Key", player),
-                 lambda state: state.has('Surface 1', player))
+                 lambda state: (
+                     state.has('Surface 1', player) and
+                     state.has('Hut Door Key (Surface 1)', player)
+                 ))
     if "Surface 1 - Hut Door Key (Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Hut Door Key (Agent)"):
         add_rule(world.multiworld.get_location("Surface 1 - Hut Door Key (Agent)", player),
-                 lambda state: state.has('Surface 1', player))
+                 lambda state: (
+                     state.has('Surface 1', player) and
+                     state.has('Hut Door Key (Surface 1)', player)
+                 ))
     if "Surface 1 - Hut Door Key (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Hut Door Key (Double Agent)"):
         add_rule(world.multiworld.get_location("Surface 1 - Hut Door Key (Double Agent)", player),
-                 lambda state: state.has('Surface 1', player))
+                 lambda state: (
+                     state.has('Surface 1', player) and
+                     state.has('Hut Door Key (Surface 1)', player)
+                 ))
     if "Surface 1 - Hut Door Key (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Hut Door Key (Secret Agent)"):
         add_rule(world.multiworld.get_location("Surface 1 - Hut Door Key (Secret Agent)", player),
-                 lambda state: state.has('Surface 1', player))
+                 lambda state: (
+                     state.has('Surface 1', player) and
+                     state.has('Hut Door Key (Surface 1)', player)
+                 ))
     if "Surface 1 - Obtain Surface Safe Key" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Obtain Surface Safe Key"):
         add_rule(world.multiworld.get_location("Surface 1 - Obtain Surface Safe Key", player),
-                 lambda state: state.has('Surface 1', player))
+                 lambda state: (
+                     state.has('Surface 1', player) and
+                     state.has('Safe Key (Surface 1)', player)
+                 ))
     if "Surface 1 - Obtain Surface Safe Key (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Obtain Surface Safe Key (Double Agent)"):
         add_rule(world.multiworld.get_location("Surface 1 - Obtain Surface Safe Key (Double Agent)", player),
                  lambda state: (
@@ -4472,22 +4485,13 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  ))
     if "Surface 1 - Safe Key (Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Safe Key (Agent)"):
         add_rule(world.multiworld.get_location("Surface 1 - Safe Key (Agent)", player),
-                 lambda state: (
-                     state.has('Surface 1', player) and
-                     state.has('Hut Door Key (Surface 1)', player)
-                 ))
+                 lambda state: state.has('Surface 1', player))
     if "Surface 1 - Safe Key (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Safe Key (Double Agent)"):
         add_rule(world.multiworld.get_location("Surface 1 - Safe Key (Double Agent)", player),
-                 lambda state: (
-                     state.has('Surface 1', player) and
-                     state.has('Hut Door Key (Surface 1)', player)
-                 ))
+                 lambda state: state.has('Surface 1', player))
     if "Surface 1 - Safe Key (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Safe Key (Secret Agent)"):
         add_rule(world.multiworld.get_location("Surface 1 - Safe Key (Secret Agent)", player),
-                 lambda state: (
-                     state.has('Surface 1', player) and
-                     state.has('Hut Door Key (Surface 1)', player)
-                 ))
+                 lambda state: state.has('Surface 1', player))
     if "Surface 1 - Secret Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Surface 1 - Secret Agent (Clear)"):
         add_rule(world.multiworld.get_location("Surface 1 - Secret Agent (Clear)", player),
                  lambda state: (
