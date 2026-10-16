@@ -25,6 +25,9 @@ u32 choose_appearance(void) {
     return (body << 16) | head;
 }
 u32 choose_weapon(u32 original) {
+    if (((int (*)(int))0x7F0927BC)(28))
+        return 0;
+
     if (!((original >= 2 && original <= 25) || original == 30 || original == 31))
         return 0;
     return weapons[random_next() % 16];
