@@ -796,7 +796,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player) and
+                     state.has('Cell Key 1 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
@@ -807,7 +807,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player) and
+                     state.has('Cell Key 1 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
@@ -1040,7 +1040,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player) and
+                     state.has('Cell Key 1 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player) and
                      state.has('Keycard A (Bunker 2)', player) and
@@ -1057,7 +1057,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player) and
+                     state.has('Cell Key 1 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player)
                  ))
@@ -1066,7 +1066,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player) and
+                     state.has('Cell Key 1 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player)
                  ))
@@ -1075,7 +1075,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player) and
+                     state.has('Cell Key 1 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player)
                  ))
@@ -1084,7 +1084,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player) and
+                     state.has('Cell Key 1 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player)
                  ))
@@ -1295,7 +1295,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Bunker 2', player) and
                      state.has('Watch Magnet', player) and
-                     state.has('Cell Key 2 (Bunker 2)', player) and
+                     state.has('Cell Key 1 (Bunker 2)', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player) and
                      state.has('Keycard A (Bunker 2)', player) and
