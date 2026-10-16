@@ -185,7 +185,7 @@ class RandomizeEnemyLoadouts(Toggle):
     """
     Enemy weapons can be anything for every enemy in either or both hands
     """
-    display_name = "randomize_enemy_loadouts"
+    display_name = "Randomize Enemy Loadouts"
     default = 0
 
 
@@ -198,7 +198,7 @@ class SfxRandomization(Choice):
     """
     display_name = "SFX Randomization"
     option_weapons_only = 1
-    option_catagories = 2
+    option_categories = 2
     option_true_random = 3
     option_off = 4
     default = 4
