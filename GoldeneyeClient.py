@@ -1558,7 +1558,6 @@ class GoldeneyeClient(BizHawkClient):
     # | Cheat Shuffler | #
     ########################
 
-            # 1. Enable new unlocks once; preserve the player's later menu choices.
             cheat_shuffler = ctx.slot_data["options"].get("cheat_shuffler", 0) == 1
             owned_cheats = {CHEAT_EFFECTS[item.item]["cheat_id"]: CHEAT_EFFECTS[item.item]
                             for item in ctx.items_received if item.item in CHEAT_EFFECTS} if cheat_shuffler else {}
@@ -2039,8 +2038,6 @@ class GoldeneyeClient(BizHawkClient):
                                         }])
                                     else:
                                         self.pending_success_objectives.add(location_id)    # This is for objectives like Minimize Casualties (requires_success)
-
-                    # Check if all objectives have been completed #
 
                     all_active_objectives = True
 

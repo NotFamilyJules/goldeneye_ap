@@ -1385,7 +1385,44 @@ def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
         patched,
         "Valentin: Good evening, Mr. Bond.\n"
         "           These are strange times...\n",
-        "Hagrid: Yer a wizard Harry.\n"
+        "Hagrid: Rubeus Hagrid, Keeper of\n"
+        "        Keys and Grounds at Hogwarts.\n"
+    )
+
+    patch_text_replacements(
+        patched,
+        "Bond: With an ex-KGB agent meeting\n"
+        "        an MI6 operative in the middle\n"
+        "        of St. Petersburg?\n",
+        "Hagrid: Of course you know\n"
+        "        all about Hogwarts.\n"
+    )
+
+    patch_text_replacements(
+        patched,
+        "Valentin: Ha! I never thought I'd find\n"
+        "           myself helping you, but things\n"
+        "           have changed in Russia.\n",
+        "Bond: Valentin, that movie won't\n"
+        "     be released for another\n" 
+        "     four years from now.\n"
+    )
+
+    patch_text_replacements(
+        patched,
+        "Valentin: Janus will meet you by Lenin's\n"
+        "           statue. Beware him, he's a Lienz\n"
+        "           Cossack traitor.\n",
+        "Hagrid: Yer a wizard, Harry.\n"
+    )
+
+    patch_text_replacements(
+        patched,
+        "Valentin: Now I must leave - the guards\n"
+        "           are out in force and I fear they\n"
+        "           may mistake me for a spy!\n",
+        "Bond: Okay you said the line. You\n"
+        "      can fuck off now.\n"
     )
 
 
@@ -1400,7 +1437,9 @@ def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
 #################################################################################################################################
 
 def patch_quick_select(rom):
+    
     # 1. Verify the three US prologues and the existing reserved-tail loader.
+    
     native = Path(__file__).parent / "native"
     symbols = {}
     for line in (native / "quick_select_hooks_symbols.txt").read_text().splitlines():
@@ -1421,7 +1460,9 @@ def patch_quick_select(rom):
     write_u32_be(rom, 0x3E57C, 0x252B0B80)
     assert read_u32_be(rom, 0x3E568) == 0x2508F000
     write_u32_be(rom, 0x3E568, 0x2508B000)
+
     # 2. Relocate the loader source; keep its reserved RAM tail and zeroed state pointer.
+    
     hooks = (native / "quick_select_hooks.bin").read_bytes()
     assert len(hooks) <= 0x560
     # Keep the room identity at BFF800 free. Relocate the combined loader source.
@@ -1429,7 +1470,9 @@ def patch_quick_select(rom):
     rom[0xBFB000:0xBFB600] = rom[0xBFF000:0xBFF600]
     rom[0xBFB600:0xBFBB80] = hooks.ljust(0x580, b"\0")
     assert rom[0xBFF800:0xBFFC00] == b"\xff" * 0x400
+    
     # 3. Stage code and labels occupy verified cartridge padding, not live assets.
+    
     payload = (native / "quick_select.bin").read_bytes()
     assert len(payload) <= 0x2000
     assert rom[0xBFC000:0xBFE200] == b"\xff" * 0x2200
@@ -1447,6 +1490,10 @@ def patch_quick_select(rom):
 
 def patch_surface_special_mine(rom):
     import zopfli.zlib
+
+# Surface 2 Special Timed Mine is now a native gadget, not a bastardized remote mine. 
+# It give the player the tracker bug, but it flips model to the remote mine when thrown.
+# The timed mine functionality is based in the original surface 2 code.
 
     # 1. Keep Surface 2's native placement, failure and ten-second explosion scripts.
     # Only the accepted item changes: gadget 47 instead of ordinary Remote Mine 29.
