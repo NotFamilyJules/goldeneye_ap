@@ -74,6 +74,7 @@ Again, the map select screen will show which items you have unlocked for loadout
 - Quality of Life Improvements - I'd like to implement more on the quick select and allow you to set a favorite weapon to always start a level with to cut down on the endless A mash scrolling through weapons.
 - More locations - I spent a good amount of time doing dumb shit like making Boris' PP7 or the AR33 Easter Egg in Caverns a check and I really want to find interesting ways to make more locations. I could add Ouromov's Briefcase as a check, but that's getting into too difficult territory in my opinion. All I can think of is doing something truly abhorrent and making like wooden crate sanity or something. There's no way I'm mapping all those out, but if you're bored enough, have at it, I'll put it in just to see the world burn.
 - Lag reduction - the game CHUGS sometimes and it loads incredily slow. I really wanna find some ways to cut down on those things where I can, but a PC Port will probably handle that just fine so I'll be patient.
+- Natalya Death Link - It would be funny.
 
 # Special Thanks
 
