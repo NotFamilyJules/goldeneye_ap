@@ -3227,7 +3227,7 @@ MISSIONS = [
         "unlock_item_name": "Surface 2",
         "unlock_item_id": 73037008,
         "starting_option_value": 8,
-        "base_loadout_ids": [5, 29],
+        "base_loadout_ids": [5, 47],
         "cheat_unlock_check": {'location_id': 70803001, 'location_name': 'Surface 2 - Cheat - Tiny Bond', 'difficulty_code': 3, 'time_seconds': 255},
         "key_items": [
             {
@@ -10121,7 +10121,7 @@ LOADOUT_GADGETS = {
     },
     17330008: {
         "item_name": "Special Timed Mine",
-        "item_id": 29,
+        "item_id": 47,
         "missions": ['Surface 2'],
     },
     17330009: {

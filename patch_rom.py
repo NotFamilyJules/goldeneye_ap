@@ -466,8 +466,10 @@ KEY_ITEM_RECEIVE_PATCHES = [
 KEY_WATCH_PATCHES = [
     (0x0C1B9C, 0x8CA20000, 0x94A20002),  # count: initial type
     (0x0C1C2C, 0x8CA20000, 0x94A20002),  # count: next type
+    (0x0C1C08, 0x8CAD0004, 0x94AD0006),  # count: compare native ID, not packed AP identity
     (0x0C1C7C, 0x8CA20000, 0x94A20002),  # index: initial type
     (0x0C1D3C, 0x8CA20000, 0x94A20002),  # index: next type
+    (0x0C1D08, 0x8CAD0004, 0x94AD0006),  # index: compare native ID, not packed AP identity
     (0x0C1DF4, 0x8C440000, 0x94440002),  # model: type
     (0x0C1E30, 0x8C620004, 0x94620006),  # model: low half of value
 ]
@@ -588,7 +590,7 @@ def patch_semantic_object_ownership(patched, data):
         0x3C088003, 0x8D08A8F8, 0x24090000 | mission["mission_id"],
         0x15090006, 0x24880000 | (-gun["object_tag"] & 0xFFFF),
         0x2D080002, 0x11000003, 0,
-        0x0BC230C5, 0x24040000 | gun["native_item_id"],  # native bondinvHasInvItem
+        0x0BC230F0, 0x24040000 | gun["native_item_id"],  # bondinvItemAvailable includes active All Guns
         jump(a), 0,
     ]
     for index, word in enumerate(words):
@@ -610,23 +612,19 @@ def patch_semantic_object_ownership(patched, data):
     for index, word in enumerate(words):
         write_u32_be(patched, offset + index * 4, word)
 
-    # AI_IFBondCollectedObject has the same tag semantics. Reuse the adjacent
-    # three-byte predicate's unchanged native label/advance tail. Verify that
-    # tail too, rather than assuming its register contract or command length.
+    # AI_IFBondCollectedObject normally uses semantic ownership. A guard just
+    # before BondCollectObject must instead query the physical handoff. The
+    # existing loader installs that predicate at 8007FD00 below. Keep the native
+    # three-byte command's label/advance tail and the passive-watch helper.
     offset = 0x6B84C
     if hashlib.sha256(patched[offset:0x6B8D0]).hexdigest() != "4b2103c025f53b788bc4e38bbec29b1860fd3c7c16357d53688cc2670c3c4718":
         raise SystemExit("Unexpected native AI collection predicate instructions")
-    words = [jump(ownership, True), 0x92240001,
-             branch(0x14400000, offset + 8, 0x6B8AC), 0x02C02025,
-             0x0FC15C30, 0x92240001,
-             branch(0x10400000, offset + 24, 0x6B8C4), 0,
-             0x0FC233F8, 0x8C440010, jump(0x6B8A4), 0]
+    words = [0x3C198007, 0x3739FD00, 0x0320F809, 0x92240001,
+             branch(0x14400000, offset + 16, 0x6B8AC), 0x02C02025,
+             jump(0x6B8C4), 0]
     for index, word in enumerate(words):
         write_u32_be(patched, offset + index * 4, word)
-    # bondinvHasPropInInv compares pointers without dereferencing its argument;
-    # NULL cannot equal any legitimate native inventory prop. This allows the
-    # native predicate above to retain that null-object outcome without a second
-    # branch. The unused tail holds the watch's passive-item predicate.
+    # The unused tail holds the watch's passive-item predicate.
     offset = 0x6B880
     words = [0x2458FFC2, 0x3B19000B, 0x2F020016, 0x2F390001, 0x03E00008, 0x00591026]
     for index, word in enumerate(words):
@@ -699,6 +697,32 @@ def patch_native_handoff_feedback(patched):
         write_u32_be(patched, helper + index * 4, word)
     write_u32_be(patched, 0x6BD20, jump(helper))
     write_u32_be(patched, 0x6BD24, 0x26520002)
+
+    # 4. Use the existing loader's unused tail, after the Surface 2 adapters.
+    # s1 is the current AI command; a0 is its tag. Only an immediately following
+    # BondCollectObject of that same tag asks whether the source belongs to Bond.
+    # AP ownership must neither skip this transfer nor cause repeated handoffs
+    # when shuffled acquisition deliberately omits the native inventory node.
+    start, end = 0xBFB900, 0xBFBA00  # loaded at 8007FD00..8007FE00
+    assert patched[start:end] == bytes(end - start)
+    words = [
+        0x27BDFFE8, 0xAFBF0014,                    # preserve return address
+        0x92280003, 0x24090063, 0x15090014, 0x92280004,
+        0x15040012, 0,                            # different opcode/tag: semantic
+        0x3C197F05, 0x373970C0, 0x0320F809, 0,    # objFindByTagId
+        0x1040001D, 0, 0x8C420010, 0x1040001A, 0, # absent object/prop: false
+        0x8C48001C, 0x3C098008, 0x8D29A0B0, 0x8D2900A8,
+        0x01091026, 0x2C420001, 0x10000012, 0,    # source.parent == player.prop
+        0x3C197F00, 0x37399ADC, 0x0320F809, 0,    # existing semantic ownership
+        0x1440000C, 0x92240001,                    # owned: true; else restore tag
+        0x3C197F05, 0x373970C0, 0x0320F809, 0,    # original native fallback
+        0x10400006, 0, 0x8C440010,
+        0x3C197F08, 0x3739CFE0, 0x0320F809, 0,    # bondinvHasPropInInv
+        0x8FBF0014, 0x03E00008, 0x27BD0018,
+    ]
+    assert start + len(words) * 4 <= end
+    for index, word in enumerate(words):
+        write_u32_be(patched, start + index * 4, word)
 
 
 def patch_startup_weapon_grants(patched):
@@ -959,10 +983,13 @@ def patch_completed_mission_labels(rom):
         0x3C088008,  # t0 = mailbox base (signed offsets below)
         0x01134821,  # t1 = base + s3, the native mission index (0..19)
         0x9129F240,  # read this mission's AP-confirmed clear flag
-        0x1120000C, 0,  # unchanged label/color when not cleared
+        0x11200010, 0,  # unchanged label/color when not cleared
         0x3C1500FF,  # s5 = green; native drawing adds its two alpha values
-        0x240A0002,  # only the latest clear has flag 2; older clears retain their names
-        0x152A0008, 0,
+        0x2D2A0003,  # t2 = flag < 3
+        0x15400002, 0,  # flags 1 and 2 keep green
+        0x3C15FFD7,  # s5 = gold (#FFD700) for flags 3 and 4
+        0x312A0001,  # odd flags keep names; flags 2 and 4 use the latest-clear label
+        0x15400008, 0,
         0x2509F254,  # t1 = replacement label
         0x02405025,  # t2 = native 24-byte label buffer
         0x912B0000,  # copy one byte, including the terminator
@@ -1240,7 +1267,6 @@ def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
     patch_tank_entry(patched)
     patch_semantic_object_ownership(patched, data)
     patch_auto_fail(patched)
-    patch_native_handoff_feedback(patched)
 
     # Native helper behavior:
     # - read one byte from 0x8007F000 + mission_index
@@ -1364,6 +1390,8 @@ def build_output_rom(rom: bytes, *, randomization_hooks=True) -> bytes:
 
 
     patch_quick_select(patched)
+    patch_surface_special_mine(patched)
+    patch_native_handoff_feedback(patched)
     update_n64_header_checksums(patched)
     return bytes(patched)
 
@@ -1411,6 +1439,66 @@ def patch_quick_select(rom):
                           (144, "[PASSIVE]"), (176, "DUAL  R: EQUIP")):
         text = label.encode("ascii") + b"\0"
         rom[0xBFE000 + offset:0xBFE000 + offset + len(text)] = text
+
+
+#################################################################################################################################
+################################################ SURFACE 2 SPECIAL TIMED MINE ###################################################
+#################################################################################################################################
+
+def patch_surface_special_mine(rom):
+    import zopfli.zlib
+
+    # 1. Keep Surface 2's native placement, failure and ten-second explosion scripts.
+    # Only the accepted item changes: gadget 47 instead of ordinary Remote Mine 29.
+    setup = bytearray(zlib.decompress(rom[0x8DAED2:], -15))
+    assert hashlib.sha256(setup).hexdigest() == "289e5b8ce6c3d51bbbd25561e181bfd6b6092f1e8be3d5ea3898f8e587a7ceb5"
+    write_u32_be(setup, 0xA884, 47)  # starting gadget
+    write_u32_be(setup, 0xA894, 20)  # one round of gadget ammo, no Remote Mine ammo
+    setup[0xD71C] = 47              # attached to helicopter tag 9
+    setup[0xD720] = 47              # incorrectly placed elsewhere
+
+    # 2. Move just the intro to the end, then use its old opening for a native rename.
+    # Every existing prop index, pad, path and AI pointer stays at its original offset.
+    intro = bytes(setup[0xA7D0:0xA9EC])
+    write_u32_be(setup, 8, len(setup))
+    setup.extend(intro)
+    rename = struct.pack(">11I", 37, 0, 47, 0x8019, 0x8020, 0x8020, 0x8020, 0, 0, 0, 48)
+    setup[0xA7CC:0xA7CC + len(rename)] = rename
+
+    # 3. Fill an unused Surface 2 string. Other missions keep their own gadget names.
+    text_bank = bytearray(zlib.decompress(rom[0x8F3902:], -15))
+    assert read_u32_be(text_bank, 32 * 4) == 0
+    write_u32_be(text_bank, 32 * 4, len(text_bank))
+    text_bank.extend(b"Special Timed Mine\n\0")
+    # Zopfli keeps both edited resources inside the original ROM file slots.
+    for start, end, data in ((0x8DAED0, 0x8DEFC0, setup), (0x8F3900, 0x8F3D90, text_bank)):
+        packed = b"\x11\x72" + zopfli.zlib.compress(bytes(data), numiterations=15)[2:-4]
+        assert len(packed) <= end - start, "Surface 2 resource exceeds its original slot"
+        rom[start:end] = packed.ljust(end - start, b"\0")
+
+    # 4. Reuse the reserved native loader tail after quick select's fixed adapters.
+    # These two hooks change appearance only when gadget 47 is used in Surface 2.
+    game_data = zlib.decompress(rom[0x21992:], -15)
+    assert struct.unpack_from(">2I", game_data, 0x8003436C - 0x80020D90) == (0x8003CEC0, 0x800539C8)
+    native = Path(__file__).parent / "native"
+    payload = (native / "surface_mine.bin").read_bytes()
+    assert len(payload) <= 0x340
+    assert rom[0xBFB820:0xBFBB60] == bytes(0x340)
+    rom[0xBFB820:0xBFB820 + len(payload)] = payload
+    symbols = {}
+    for line in (native / "surface_mine_symbols.txt").read_text().splitlines():
+        fields = line.split()
+        if len(fields) == 3:
+            symbols[fields[2]] = int(fields[0], 16) & 0xFFFFFFFF
+    for address, expected, name in (
+        (0x7F005710, "248efffd27bdffe82dc1002eafbf0014", "surface_mine_preload"),
+        (0x7F05206C, "0004708027bdff4801c47023000e7080", "surface_mine_create"),
+    ):
+        offset = address - 0x7F000000 + 0x34B30
+        assert rom[offset:offset + 16] == bytes.fromhex(expected), name
+        target = symbols[name]
+        rom[offset:offset + 16] = struct.pack(">4I", 0x3C190000 | (target >> 16),
+            0x37390000 | (target & 0xFFFF), jump(0x7F009A34), 0)
 
 
 def main() -> None:

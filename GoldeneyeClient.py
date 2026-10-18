@@ -305,17 +305,22 @@ def get_active_clear_location_id(ctx, mission, difficulty_code):
     return mission["clear_location_ids"][difficulty_code] # player chose per difficulty clear
 
 
-def build_cleared_mission_labels(ctx, last_clear_mission=None):
+def build_cleared_mission_labels(ctx, last_clear_mission=None): # This is changes map screen text color when completed. Also uses CLEARED_MISSION_LABEL right after it's completed once.
     # 1. Use server-confirmed clears, including progress received on reconnect.
     cleared = bytearray(len(MISSIONS))
     checked = ctx.checked_locations or set()
     for mission in MISSIONS:
         locations = ([mission["shared_clear_location_id"]]
-                     if ctx.slot_data["options"]["mission_clear_mode"] == 2
+                     if ctx.slot_data["options"]["mission_clear_mode"] == 2 # player chose shared mission difficulty index [2]
                      else mission["clear_location_ids"].values())
         index = mission["unlock_byte_offset"]
         if any(location in checked for location in locations):
-            cleared[index] = 2 if index == last_clear_mission else 1
+            if ctx.slot_data["options"]["mission_clear_mode"] != 2 and all(
+                location in checked for location in locations
+            ):
+                cleared[index] = 4 if index == last_clear_mission else 3 # If all difficulties are cleared, then the mission is fully cleared and will be marked as 3 or 4
+            else:                                                         
+                cleared[index] = 2 if index == last_clear_mission else 1 # Shared clear or only some difficulties cleared.
 
     # 2. Leave room in the native 24-byte label buffer for its newline and terminator.
     label = CLEARED_MISSION_LABEL.encode("ascii")
@@ -1351,7 +1356,7 @@ class GoldeneyeClient(BizHawkClient):
             return False
 
         menu_hook = await bizhawk.read(ctx.bizhawk_ctx, [(0x430AC, 8, "ROM"), (0xBFF54C, 4, "ROM")])
-        if [bytes(value) for value in menu_hook] != [bytes.fromhex("3c1980073739f940"), bytes.fromhex("1120000c")]:
+        if [bytes(value) for value in menu_hook] != [bytes.fromhex("3c1980073739f940"), bytes.fromhex("11200010")]:
             logger.error("Rebuild the AP ROM; its completed mission label hook is missing.")
             return False
         
@@ -1697,6 +1702,30 @@ class GoldeneyeClient(BizHawkClient):
                         reads[1],
                         bonddata_bytes,
                     )
+
+                    # 1. Recover a Surface 2 gadget received while the client was away.
+                    # Native startup supplies one bug round. Throwing it consumes that
+                    # round, so reconnects and savestates must never refill it here.
+                    if mission["name"] == "Surface 2" and any(item.item == 17330008 for item in ctx.items_received):
+                        bonddata_pointer = to_rdram_ptr(int.from_bytes(bonddata_bytes, "big"))
+                        if not 0 < bonddata_pointer <= 0x800000 - 0x2A60:
+                            return
+                        ammo_address = bonddata_pointer + 0x1180
+                        ammo_bytes = (await bizhawk.read(ctx.bizhawk_ctx, [(ammo_address, 4, "RDRAM")]))[0]
+                        if int.from_bytes(ammo_bytes, "big") > 0:
+                            snapshot = await read_inventory_snapshot(ctx, bonddata_pointer)
+                            if "guards" not in snapshot:
+                                return
+                            gadget_writes = build_live_inventory_add_weapon_writes(snapshot, bonddata_pointer, 47)
+                            # 2. Add only the missing inventory node while this attempt matches.
+                            if gadget_writes and not await bizhawk.guarded_write(ctx.bizhawk_ctx, gadget_writes,
+                                    snapshot["guards"] + [
+                                        (SCREEN_ID_ADDRESS, reads[0], "RDRAM"),
+                                        (MISSION_ID_ADDRESS, reads[1], "RDRAM"),
+                                        (BONDDATA_pointer_ADDRESS, bonddata_bytes, "RDRAM"),
+                                        (ammo_address, ammo_bytes, "RDRAM"),
+                                    ]):
+                                return
 
     ############################
     # | Pending refills | #

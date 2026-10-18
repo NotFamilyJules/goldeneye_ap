@@ -1,0 +1,12 @@
+ffffffff8007fc20 T _ftext
+ffffffff8007fc20 T surface_mine_preload
+ffffffff8007fc60 t restore_bug
+ffffffff8007fc78 t preload_original
+ffffffff8007fc98 T surface_mine_create
+ffffffff8007fcbc t create_original
+ffffffff80080cdc R __bss_start
+ffffffff80080cdc R _edata
+ffffffff80080cdc R _end
+ffffffff80080cdc R _fbss
+ffffffff80080cdc N _fdata
+ffffffff80088cd0 r _gp
