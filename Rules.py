@@ -2869,7 +2869,8 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Facility', player) and
                      (state.has('Door Decoder', player) or state.has('Keycard B (Facility)', player)) and
-                     (state.has('Keycard A (Facility)', player) or state.has('Keycard B (Facility)', player))
+                     (state.has('Keycard A (Facility)', player) or state.has('Keycard B (Facility)', player)) and
+                     has_explosive(state, player)
                  ))
     if "Facility - Door Decoder" in world.location_name_to_id and is_valid_location(world, "Facility - Door Decoder"):
         add_rule(world.multiworld.get_location("Facility - Door Decoder", player),
@@ -2986,8 +2987,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Facility', player) and
                      (state.has('Door Decoder', player) or state.has('Keycard B (Facility)', player)) and
-                     (state.has('Keycard A (Facility)', player) or state.has('Keycard B (Facility)', player)) and
-                     has_explosive(state, player)
+                     (state.has('Keycard A (Facility)', player) or state.has('Keycard B (Facility)', player))
                  ))
     if "Facility - Rendezvous With 006" in world.location_name_to_id and is_valid_location(world, "Facility - Rendezvous With 006"):
         add_rule(world.multiworld.get_location("Facility - Rendezvous With 006", player),
