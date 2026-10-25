@@ -911,9 +911,14 @@ def set_rules(world: "GoldeneyeWorld") -> None:
     if "Caverns - (Clear)" in world.location_name_to_id and is_valid_location(world, "Caverns - (Clear)"):
         add_rule(world.multiworld.get_location("Caverns - (Clear)", player),
                  lambda state: (
-                     state.has("Code Card 1 (Caverns Item)", player) and
-                     state.has("Code Card 2 (Caverns Item)", player) and
-                     state.has("Code Card 3 (Caverns Item)", player) and
+                     (
+                         state.has("Code Card 1 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) or
+                     (
+                         state.has("Code Card 2 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) and
                      has_gun(state, player)
                  ))
     if "Caverns - AR33 Assault Rifle" in world.location_name_to_id and is_valid_location(world, "Caverns - AR33 Assault Rifle"):
@@ -931,9 +936,14 @@ def set_rules(world: "GoldeneyeWorld") -> None:
     if "Caverns - Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Caverns - Agent (Clear)"):
         add_rule(world.multiworld.get_location("Caverns - Agent (Clear)", player),
                  lambda state: (
-                     state.has("Code Card 1 (Caverns Item)", player) and
-                     state.has("Code Card 2 (Caverns Item)", player) and
-                     state.has("Code Card 3 (Caverns Item)", player) and
+                     (
+                         state.has("Code Card 1 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) or
+                     (
+                         state.has("Code Card 2 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) and
                      has_gun(state, player)
                  ))
     if "Caverns - Code Card 1 (Agent)" in world.location_name_to_id and is_valid_location(world, "Caverns - Code Card 1 (Agent)"):
@@ -993,44 +1003,79 @@ def set_rules(world: "GoldeneyeWorld") -> None:
     if "Caverns - Double Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Caverns - Double Agent (Clear)"):
         add_rule(world.multiworld.get_location("Caverns - Double Agent (Clear)", player),
                  lambda state: (
-                     state.has("Code Card 1 (Caverns Item)", player) and
-                     state.has("Code Card 2 (Caverns Item)", player) and
-                     state.has("Code Card 3 (Caverns Item)", player) and
+                     (
+                         state.has("Code Card 1 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) or
+                     (
+                         state.has("Code Card 2 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) and
                      has_gun(state, player)
                  ))
     if "Caverns - Minimize Caverns Scientist Casualties" in world.location_name_to_id and is_valid_location(world, "Caverns - Minimize Caverns Scientist Casualties"):
         add_rule(world.multiworld.get_location("Caverns - Minimize Caverns Scientist Casualties", player),
-                 lambda state: has_gun(state, player))
+                 lambda state: (
+                     (
+                         state.has("Code Card 1 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) or
+                     (
+                         state.has("Code Card 2 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) and
+                     has_gun(state, player)
+                 ))
     if "Caverns - Minimize Caverns Scientist Casualties (Agent)" in world.location_name_to_id and is_valid_location(world, "Caverns - Minimize Caverns Scientist Casualties (Agent)"):
         add_rule(world.multiworld.get_location("Caverns - Minimize Caverns Scientist Casualties (Agent)", player),
                  lambda state: (
-                     state.has("Code Card 1 (Caverns Item)", player) and
-                     state.has("Code Card 2 (Caverns Item)", player) and
-                     state.has("Code Card 3 (Caverns Item)", player) and
+                     (
+                         state.has("Code Card 1 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) or
+                     (
+                         state.has("Code Card 2 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) and
                      has_gun(state, player)
                  ))
     if "Caverns - Minimize Caverns Scientist Casualties (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Caverns - Minimize Caverns Scientist Casualties (Double Agent)"):
         add_rule(world.multiworld.get_location("Caverns - Minimize Caverns Scientist Casualties (Double Agent)", player),
                  lambda state: (
-                     state.has("Code Card 1 (Caverns Item)", player) and
-                     state.has("Code Card 2 (Caverns Item)", player) and
-                     state.has("Code Card 3 (Caverns Item)", player) and
+                     (
+                         state.has("Code Card 1 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) or
+                     (
+                         state.has("Code Card 2 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) and
                      has_gun(state, player)
                  ))
     if "Caverns - Minimize Caverns Scientist Casualties (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Caverns - Minimize Caverns Scientist Casualties (Secret Agent)"):
         add_rule(world.multiworld.get_location("Caverns - Minimize Caverns Scientist Casualties (Secret Agent)", player),
                  lambda state: (
-                     state.has("Code Card 1 (Caverns Item)", player) and
-                     state.has("Code Card 2 (Caverns Item)", player) and
-                     state.has("Code Card 3 (Caverns Item)", player) and
+                     (
+                         state.has("Code Card 1 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) or
+                     (
+                         state.has("Code Card 2 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) and
                      has_gun(state, player)
                  ))
     if "Caverns - Secret Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Caverns - Secret Agent (Clear)"):
         add_rule(world.multiworld.get_location("Caverns - Secret Agent (Clear)", player),
                  lambda state: (
-                     state.has("Code Card 1 (Caverns Item)", player) and
-                     state.has("Code Card 2 (Caverns Item)", player) and
-                     state.has("Code Card 3 (Caverns Item)", player) and
+                     (
+                         state.has("Code Card 1 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) or
+                     (
+                         state.has("Code Card 2 (Caverns Item)", player) and
+                         state.has("Code Card 3 (Caverns Item)", player)
+                     ) and
                      has_gun(state, player)
                  ))
     if "Caverns - Use Radio To Contact Jack Wade" in world.location_name_to_id and is_valid_location(world, "Caverns - Use Radio To Contact Jack Wade"):
