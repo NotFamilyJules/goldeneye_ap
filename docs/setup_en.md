@@ -1,59 +1,33 @@
 # GoldenEye 007 Setup Guide
 
-## What You Need
+## First-time setup
 
-- Archipelago `0.6.6` or newer
-- BizHawk (Tested on 2.10, let me know if it works on other versions)
-- GoldenEye 007 .apworld
-- goldeneye_ap_randomizer.lua
-- GoldenEye 007 ROM that you definitely legally acquired
-- "GoldenEye 007 (U) [!] Everything Unlocked.bps"
+Install:
 
-## Install the AP World
+1. Archipelago 0.6.7 or newer
+2. BizHawk (Should work on any 2.9+, but was optimized on 2.10)
+3. The newest goldeneye.apworld on the releases page.
 
-1. Once Archipelago is installed, double click goldeneye.apworld and wait for the pop-up to say it installed successfully.
-2. Restart Archipelago tools if they were already open. I still mess this up all the time, you actually have to completely close everything AP if you install a new apworld.
+Restart Archipelago after installing the world.
+You need your own legally dumped USA GoldenEye 007 ROM in `.z64` format.
+A pre-patched ROM will not work.
 
-## Generate a Seed
+## Play from a room
 
-1. Open your YAML template.
-2. Configure your GoldenEye options.
-3. Generate normally through Archipelago.
-4. Do death_link unless you're a big baby.
+1. Download your `.apge` patch from the Archipelago room page.
+2. Open it with Archipelago Launcher. On Windows, use **Open with**, select
+   `ArchipelagoLauncher.exe`, and choose to always use it for `.apge` files.
+3. On first use, select your base GoldenEye ROM and `EmuHawk.exe` when asked.
 
-## Patch your legally acquired GoldenEye ROM
+The launcher creates a patched `.z64` beside the download, starts BizHawk,
+loads GoldenEye's Lua script, enables the 8 MiB Expansion Pak, and opens the
+client. This ROM NEEDS the Expansion Pak so don't turn that off.
+The ROM supplies your slot and seed. Room downloads supply the server
+address. If there's no password, just leave that blank if it asks.
 
-1. I'll definitely have this done for you in a later build but...
-2. https://www.marcrobledo.com/RomPatcher.js/ unless you have a better way of patching.
-3. ROM file is the vanilla rom. Patch file is the "GoldenEye 007 (U) [!] Everything Unlocked.bps".
-3. Apply Patch.
-4. That shooould be it.
+## Host Server / Play Solo
 
-## Connect to Archipelago
-
-1. Open Archipelago Launcher.
-2. Search or scroll to find BizHawk Client.
-3. Double click it until it actually opens.
-4. Connect it to your server using the top bar.
-5. It's going to wait until the lua is loaded in the next step. After that it'll prompt for your SLOT NAME.
-
-## BizHawk Setup
-
-IMPORTANT: Make sure you've put goldeneye_ap_randomizer.lua in C:\ProgramData\Archipelago\data\lua. It needs to be in the same folder as `connector_bizhawk_generic.lua`.
-
-1. Open the patched GoldenEye ROM in BizHawk.
-2. Tools > Lua Console
-3. Script > Open Script...
-4. Load `goldeneye_ap_randomizer.lua`.
-
-## BizHawk Setup
-
-1. Open the patched GoldenEye ROM in BizHawk.
-2. Tools > Lua Console
-3. Script > Open Script...
-2. Load `goldeneye_ap_randomizer.lua`.
-
-## Troubleshooting
-
-- If the client does not connect, make sure `goldeneye_ap_randomizer.lua` and `connector_bizhawk_generic.lua` are in the same folder.
-- If the world does not appear in Archipelago, confirm the `.apworld` is in `custom_worlds` and that `archipelago.json` is present inside the package.
+Use the Options Creator in Archipelago Launcher or manually configure your 
+GoldenEye player YAML and use ArchipelagoGenerate.exe. Upload the generated
+game to a room or use ArchipelagoServer.exe to run locally. The seed host should 
+not need a base ROM.
