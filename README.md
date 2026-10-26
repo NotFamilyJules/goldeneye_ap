@@ -73,6 +73,11 @@ Dialog replacement is easier than ever, just open up patch_rom.py, copy the temp
 
 Again, the map select screen will show which items you have unlocked for loadout of that level, but if that's annoying to look at, simply press F8 and it'll go away.
 
+# Known Issues
+
+- Depot Ammo Cache Crash - Sometimes picking up the items in the ammo cache room causes bizhawk to crash. I've investigated extensively but haven't been able to recreate it.
+- Depot Final Hanger Armor - This armor has been known to be picked up but not send a check. Not sure why as I also can't replicate this one.
+
 # Roadmap for v0.3
 
 - Custom Models and Markers - I've proven simple model skin changes, but I would really like to make an archipelago logo on items you have not yet got the check for, as well as find someway to signify which NPC has an item you haven't gotten the check for. Think maybe like a sims diamond over their head or something idk.
