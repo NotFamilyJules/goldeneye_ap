@@ -32,64 +32,57 @@ def has_weapon(state, player: int, weapon_name: str) -> bool:
     )
 
 
-BULLET_GUN_NAMES = [
-    "PP7 Special Issue",
-    "PP7 (Silenced)",
-    "DD44 Dostovei",
-    "KF7 Soviet",
-    "ZMG (9 mm)",
-    "D5K Deutsche",
-    "D5K (Silenced)",
-    "Phantom",
-    "AR33 Assault Rifle",
-    "RC-P90",
-    "Sniper Rifle",
-    "Cougar Magnum",
-    "Silver PP7",
-    "Automatic Shotgun",
-    "Shotgun",
-    "Golden Gun",
-    "Gold PP7",
-    "Klobb",
-    "Cheat - All Guns",
-    "Cheat - Silver PP7",
-    "Cheat - 2x RC-P90s",
-    "Cheat - Gold PP7",
-    "Cheat - 2X Lasers",
-]
-
-
-GUN_PROGRESSIVE_COUNT = 1
-EXPLOSIVE_PROGRESSIVE_COUNT = 15
-
-
-EXPLOSIVE_ITEM_NAMES = [
-    "Grenade",
-    "Timed Mine",
-    "Proximity Mine",
-    "Remote Mine",
-    "Grenade Launcher",
-    "Rocket Launcher",
-    "Tank (Missiles)",
-    "Cheat - 2X Grenade Launcher",
-    "Cheat - 2X Rocket Launcher",
-    "Cheat - All Guns",
-]
+def has_gun_or_explosive(state, player: int) -> bool:
+    return (
+        has_gun(state, player) or
+        has_explosive(state, player)
+    )
 
 
 def has_gun(state, player: int) -> bool:
-    """True if player has any gun item or enough Progressive Weapons for guns."""
     return (
-        any(state.has(gun, player) for gun in BULLET_GUN_NAMES)
-        or state.has("Progressive Weapon", player, GUN_PROGRESSIVE_COUNT)
+        has_weapon(state, player, 'PP7 Special Issue') or
+        has_weapon(state, player, 'PP7 (Silenced)') or
+        has_weapon(state, player, 'DD44 Dostovei') or
+        has_weapon(state, player, 'KF7 Soviet') or
+        has_weapon(state, player, 'ZMG (9 mm)') or
+        has_weapon(state, player, 'D5K Deutsche') or
+        has_weapon(state, player, 'D5K (Silenced)') or
+        has_weapon(state, player, 'Phantom') or
+        has_weapon(state, player, 'AR33 Assault Rifle') or
+        has_weapon(state, player, 'RC-P90') or
+        has_weapon(state, player, 'Sniper Rifle') or
+        has_weapon(state, player, 'Cougar Magnum') or
+        has_weapon(state, player, 'Silver PP7') or
+        has_weapon(state, player, 'Automatic Shotgun') or
+        has_weapon(state, player, 'Shotgun') or
+        has_weapon(state, player, 'Golden Gun') or
+        has_weapon(state, player, 'Gold PP7') or
+        has_weapon(state, player, 'Klobb') or
+        state.has('Cheat - All Guns', player) or
+        state.has('Cheat - Silver PP7', player) or
+        state.has('Cheat - 2x RC-P90s', player) or
+        state.has('Cheat - Gold PP7', player) or
+        state.has('Cheat - 2X Lasers', player)
     )
 
 
 def has_explosive(state, player: int) -> bool:
-    """True if player has any explosive item or enough Progressive Weapons for explosives."""
     return (
-        any(state.has(item_name, player) for item_name in EXPLOSIVE_ITEM_NAMES)
-        or state.has("Progressive Weapon", player, EXPLOSIVE_PROGRESSIVE_COUNT)
+        has_weapon(state, player, 'Timed Mine') or
+        has_weapon(state, player, 'Proximity Mine') or
+        has_weapon(state, player, 'Remote Mine') or
+        has_weapon(state, player, 'Rocket Launcher') or
+        has_weapon(state, player, 'Tank (Missiles)') or
+        state.has('Cheat - 2X Rocket Launcher', player) or
+        state.has('Cheat - All Guns', player)
+    )
+
+
+def can_bomb_runway(state, player: int) -> bool:
+    return (
+        has_explosive(state, player) or
+        state.has('Tank (Runway)', player)
     )
 
 
@@ -649,7 +642,8 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Camera', player) and
                      state.has('Security Room Keycard (Bunker 1)', player) and
                      state.has('Computer Room Keycard (Bunker 1)', player) and
-                     state.has('Datathief', player)
+                     state.has('Datathief', player) and
+                     has_gun_or_explosive(state, player)
                  ))
     if "Bunker 1 - Computer Room Keycard" in world.location_name_to_id and is_valid_location(world, "Bunker 1 - Computer Room Keycard"):
         add_rule(world.multiworld.get_location("Bunker 1 - Computer Room Keycard", player),
@@ -693,13 +687,22 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  ))
     if "Bunker 1 - Disrupt All Surveillance Equipment" in world.location_name_to_id and is_valid_location(world, "Bunker 1 - Disrupt All Surveillance Equipment"):
         add_rule(world.multiworld.get_location("Bunker 1 - Disrupt All Surveillance Equipment", player),
-                 lambda state: state.has('Bunker 1', player))
+                 lambda state: (
+                     state.has('Bunker 1', player) and
+                     has_gun_or_explosive(state, player)
+                 ))
     if "Bunker 1 - Disrupt All Surveillance Equipment (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 1 - Disrupt All Surveillance Equipment (Double Agent)"):
         add_rule(world.multiworld.get_location("Bunker 1 - Disrupt All Surveillance Equipment (Double Agent)", player),
-                 lambda state: state.has('Bunker 1', player))
+                 lambda state: (
+                     state.has('Bunker 1', player) and
+                     has_gun_or_explosive(state, player)
+                 ))
     if "Bunker 1 - Disrupt All Surveillance Equipment (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 1 - Disrupt All Surveillance Equipment (Secret Agent)"):
         add_rule(world.multiworld.get_location("Bunker 1 - Disrupt All Surveillance Equipment (Secret Agent)", player),
-                 lambda state: state.has('Bunker 1', player))
+                 lambda state: (
+                     state.has('Bunker 1', player) and
+                     has_gun_or_explosive(state, player)
+                 ))
     if "Bunker 1 - Double Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Bunker 1 - Double Agent (Clear)"):
         add_rule(world.multiworld.get_location("Bunker 1 - Double Agent (Clear)", player),
                  lambda state: (
@@ -709,7 +712,8 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Camera', player) and
                      state.has('Security Room Keycard (Bunker 1)', player) and
                      state.has('Computer Room Keycard (Bunker 1)', player) and
-                     state.has('Datathief', player)
+                     state.has('Datathief', player) and
+                     has_gun_or_explosive(state, player)
                  ))
     if "Bunker 1 - Download Data From Computer" in world.location_name_to_id and is_valid_location(world, "Bunker 1 - Download Data From Computer"):
         add_rule(world.multiworld.get_location("Bunker 1 - Download Data From Computer", player),
@@ -777,7 +781,8 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Key Analyzer Case', player) and
                      state.has('Goldeneye Key (Bunker 1)', player) and
                      state.has('Camera', player) and
-                     state.has('Security Room Keycard (Bunker 1)', player)
+                     state.has('Security Room Keycard (Bunker 1)', player) and
+                     has_gun_or_explosive(state, player)
                  ))
     if "Bunker 1 - Security Keycard" in world.location_name_to_id and is_valid_location(world, "Bunker 1 - Security Keycard"):
         add_rule(world.multiworld.get_location("Bunker 1 - Security Keycard", player),
@@ -800,7 +805,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Bunker 2 - Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Agent (Clear)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Agent (Clear)", player),
@@ -811,7 +816,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('CCTV Tape (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Bunker 2 - Body Armor (Auto Turret Tunnel)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Body Armor (Auto Turret Tunnel)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Body Armor (Auto Turret Tunnel)", player),
@@ -1015,7 +1020,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Watch Magnet', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Bunker 2 - Disable All Security Cameras (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Disable All Security Cameras (Double Agent)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Disable All Security Cameras (Double Agent)", player),
@@ -1024,7 +1029,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Watch Magnet', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Bunker 2 - Disable All Security Cameras (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Disable All Security Cameras (Secret Agent)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Disable All Security Cameras (Secret Agent)", player),
@@ -1033,7 +1038,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Watch Magnet', player) and
                      state.has('Cell Key 2 (Bunker 2)', player) and
                      state.has('Keycard B (Bunker 2)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Bunker 2 - Double Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Double Agent (Clear)"):
         add_rule(world.multiworld.get_location("Bunker 2 - Double Agent (Clear)", player),
@@ -1050,7 +1055,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Staff List (Bunker 2)', player) and
                      state.has('Casualty List (Bunker 2)', player) and
                      state.has('Goldeneye Operations Manual (Bunker 2)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Bunker 2 - Escape With Natalya" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Escape With Natalya"):
         add_rule(world.multiworld.get_location("Bunker 2 - Escape With Natalya", player),
@@ -1302,7 +1307,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Keycard B (Bunker 2)', player) and
                      state.has('Staff List (Bunker 2)', player) and
                      state.has('Casualty List (Bunker 2)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Bunker 2 - Silenced PP7 1 - In Safe" in world.location_name_to_id and is_valid_location(world, "Bunker 2 - Silenced PP7 1 - In Safe"):
         add_rule(world.multiworld.get_location("Bunker 2 - Silenced PP7 1 - In Safe", player),
@@ -2300,7 +2305,8 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Depot', player) and
                      state.has('Depot Safe Key (Depot)', player) and
-                     state.has('Blueprints (Depot)', player)
+                     state.has('Blueprints (Depot)', player) and
+                     has_gun_or_explosive(state, player)
                  ))
     if "Depot - D5K Bottom Right Table 1" in world.location_name_to_id and is_valid_location(world, "Depot - D5K Bottom Right Table 1"):
         add_rule(world.multiworld.get_location("Depot - D5K Bottom Right Table 1", player),
@@ -2378,31 +2384,31 @@ def set_rules(world: "GoldeneyeWorld") -> None:
         add_rule(world.multiworld.get_location("Depot - Destroy Computer Network", player),
                  lambda state: (
                      state.has('Depot', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Depot - Destroy Computer Network (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Depot - Destroy Computer Network (Double Agent)"):
         add_rule(world.multiworld.get_location("Depot - Destroy Computer Network (Double Agent)", player),
                  lambda state: (
                      state.has('Depot', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Depot - Destroy Computer Network (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Depot - Destroy Computer Network (Secret Agent)"):
         add_rule(world.multiworld.get_location("Depot - Destroy Computer Network (Secret Agent)", player),
                  lambda state: (
                      state.has('Depot', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Depot - Destroy Illegal Arms Cache" in world.location_name_to_id and is_valid_location(world, "Depot - Destroy Illegal Arms Cache"):
         add_rule(world.multiworld.get_location("Depot - Destroy Illegal Arms Cache", player),
                  lambda state: (
                      state.has('Depot', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Depot - Destroy Illegal Arms Cache (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Depot - Destroy Illegal Arms Cache (Double Agent)"):
         add_rule(world.multiworld.get_location("Depot - Destroy Illegal Arms Cache (Double Agent)", player),
                  lambda state: (
                      state.has('Depot', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Depot - Double Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Depot - Double Agent (Clear)"):
         add_rule(world.multiworld.get_location("Depot - Double Agent (Clear)", player),
@@ -2410,7 +2416,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Depot', player) and
                      state.has('Depot Safe Key (Depot)', player) and
                      state.has('Blueprints (Depot)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Depot - KF7 Bottom Left Table 1" in world.location_name_to_id and is_valid_location(world, "Depot - KF7 Bottom Left Table 1"):
         add_rule(world.multiworld.get_location("Depot - KF7 Bottom Left Table 1", player),
@@ -2489,10 +2495,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: state.has('Depot', player))
     if "Depot - Locate Trevelyn's Train (Agent)" in world.location_name_to_id and is_valid_location(world, "Depot - Locate Trevelyn's Train (Agent)"):
         add_rule(world.multiworld.get_location("Depot - Locate Trevelyn's Train (Agent)", player),
-                 lambda state: (
-                     state.has('Depot', player) and
-                     has_gun(state, player)
-                 ))
+                 lambda state: state.has('Depot', player))
     if "Depot - Locate Trevelyn's Train (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Depot - Locate Trevelyn's Train (Double Agent)"):
         add_rule(world.multiworld.get_location("Depot - Locate Trevelyn's Train (Double Agent)", player),
                  lambda state: state.has('Depot', player))
@@ -2628,7 +2631,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Depot', player) and
                      state.has('Depot Safe Key (Depot)', player) and
                      state.has('Blueprints (Depot)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Egyptian - (Clear)" in world.location_name_to_id and is_valid_location(world, "Egyptian - (Clear)"):
         add_rule(world.multiworld.get_location("Egyptian - (Clear)", player),
@@ -2869,7 +2872,8 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Facility', player) and
                      (state.has('Door Decoder', player) or state.has('Keycard B (Facility)', player)) and
-                     (state.has('Keycard A (Facility)', player) or state.has('Keycard B (Facility)', player))
+                     (state.has('Keycard A (Facility)', player) or state.has('Keycard B (Facility)', player)) and
+                     has_explosive(state, player)
                  ))
     if "Facility - Door Decoder" in world.location_name_to_id and is_valid_location(world, "Facility - Door Decoder"):
         add_rule(world.multiworld.get_location("Facility - Door Decoder", player),
@@ -2900,7 +2904,8 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Facility', player) and
                      (state.has('Door Decoder', player) or state.has('Keycard B (Facility)', player)) and
-                     (state.has('Keycard A (Facility)', player) or state.has('Keycard B (Facility)', player))
+                     (state.has('Keycard A (Facility)', player) or state.has('Keycard B (Facility)', player)) and
+                     has_explosive(state, player)
                  ))
     if "Facility - Gain Entry To Laboratory Area" in world.location_name_to_id and is_valid_location(world, "Facility - Gain Entry To Laboratory Area"):
         add_rule(world.multiworld.get_location("Facility - Gain Entry To Laboratory Area", player),
@@ -2986,8 +2991,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Facility', player) and
                      (state.has('Door Decoder', player) or state.has('Keycard B (Facility)', player)) and
-                     (state.has('Keycard A (Facility)', player) or state.has('Keycard B (Facility)', player)) and
-                     has_explosive(state, player)
+                     (state.has('Keycard A (Facility)', player) or state.has('Keycard B (Facility)', player))
                  ))
     if "Facility - Rendezvous With 006" in world.location_name_to_id and is_valid_location(world, "Facility - Rendezvous With 006"):
         add_rule(world.multiworld.get_location("Facility - Rendezvous With 006", player),
@@ -3027,15 +3031,13 @@ def set_rules(world: "GoldeneyeWorld") -> None:
         add_rule(world.multiworld.get_location("Frigate - (Clear)", player),
                  lambda state: (
                      state.has('Frigate', player) and
-                     state.has('Tracker Bug', player) and
-                     has_gun(state, player)
+                     state.has('Tracker Bug', player)
                  ))
     if "Frigate - Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Frigate - Agent (Clear)"):
         add_rule(world.multiworld.get_location("Frigate - Agent (Clear)", player),
                  lambda state: (
                      state.has('Frigate', player) and
-                     state.has('Tracker Bug', player) and
-                     has_gun(state, player)
+                     state.has('Tracker Bug', player)
                  ))
     if "Frigate - Body Armor (Invisable on Crate in Cargo Hold)" in world.location_name_to_id and is_valid_location(world, "Frigate - Body Armor (Invisable on Crate in Cargo Hold)"):
         add_rule(world.multiworld.get_location("Frigate - Body Armor (Invisable on Crate in Cargo Hold)", player),
@@ -3100,8 +3102,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Frigate', player) and
                      state.has('Tracker Bug', player) and
-                     state.has('Bomb Defuser', player) and
-                     has_gun(state, player)
+                     state.has('Bomb Defuser', player)
                  ))
     if "Frigate - Plant Tracking Bug On Helicopter" in world.location_name_to_id and is_valid_location(world, "Frigate - Plant Tracking Bug On Helicopter"):
         add_rule(world.multiworld.get_location("Frigate - Plant Tracking Bug On Helicopter", player),
@@ -3144,8 +3145,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Frigate', player) and
                      state.has('Tracker Bug', player) and
-                     state.has('Bomb Defuser', player) and
-                     has_gun(state, player)
+                     state.has('Bomb Defuser', player)
                  ))
     if "Jungle - (Clear)" in world.location_name_to_id and is_valid_location(world, "Jungle - (Clear)"):
         add_rule(world.multiworld.get_location("Jungle - (Clear)", player),
@@ -3281,13 +3281,22 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  ))
     if "Jungle - Eliminate Xenia" in world.location_name_to_id and is_valid_location(world, "Jungle - Eliminate Xenia"):
         add_rule(world.multiworld.get_location("Jungle - Eliminate Xenia", player),
-                 lambda state: state.has('Jungle', player))
+                 lambda state: (
+                     state.has('Jungle', player) and
+                     has_gun(state, player)
+                 ))
     if "Jungle - Eliminate Xenia (Agent)" in world.location_name_to_id and is_valid_location(world, "Jungle - Eliminate Xenia (Agent)"):
         add_rule(world.multiworld.get_location("Jungle - Eliminate Xenia (Agent)", player),
-                 lambda state: state.has('Jungle', player))
+                 lambda state: (
+                     state.has('Jungle', player) and
+                     has_gun(state, player)
+                 ))
     if "Jungle - Eliminate Xenia (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Jungle - Eliminate Xenia (Double Agent)"):
         add_rule(world.multiworld.get_location("Jungle - Eliminate Xenia (Double Agent)", player),
-                 lambda state: state.has('Jungle', player))
+                 lambda state: (
+                     state.has('Jungle', player) and
+                     has_gun(state, player)
+                 ))
     if "Jungle - Eliminate Xenia (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Jungle - Eliminate Xenia (Secret Agent)"):
         add_rule(world.multiworld.get_location("Jungle - Eliminate Xenia (Secret Agent)", player),
                  lambda state: (
@@ -3382,44 +3391,35 @@ def set_rules(world: "GoldeneyeWorld") -> None:
         add_rule(world.multiworld.get_location("Runway - Destroy Heavy Gun Emplacements", player),
                  lambda state: (
                      state.has('Runway', player) and
-                     state.has('Tank (Runway)', player) and
-                     has_explosive(state, player)
+                     can_bomb_runway(state, player)
                  ))
     if "Runway - Destroy Heavy Gun Emplacements (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Runway - Destroy Heavy Gun Emplacements (Double Agent)"):
         add_rule(world.multiworld.get_location("Runway - Destroy Heavy Gun Emplacements (Double Agent)", player),
                  lambda state: (
                      state.has('Runway', player) and
-                     state.has('Tank (Runway)', player) and
-                     has_explosive(state, player)
+                     can_bomb_runway(state, player)
                  ))
     if "Runway - Destroy Missile Battery" in world.location_name_to_id and is_valid_location(world, "Runway - Destroy Missile Battery"):
         add_rule(world.multiworld.get_location("Runway - Destroy Missile Battery", player),
-                 lambda state: (
-                     state.has('Runway', player) and
-                     state.has('Tank (Runway)', player) and
-                     has_explosive(state, player)
-                 ))
+                 lambda state: state.has('Runway', player))
     if "Runway - Destroy Missile Battery (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Runway - Destroy Missile Battery (Double Agent)"):
         add_rule(world.multiworld.get_location("Runway - Destroy Missile Battery (Double Agent)", player),
                  lambda state: (
                      state.has('Runway', player) and
-                     state.has('Tank (Runway)', player) and
-                     has_explosive(state, player)
+                     can_bomb_runway(state, player)
                  ))
     if "Runway - Destroy Missile Battery (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Runway - Destroy Missile Battery (Secret Agent)"):
         add_rule(world.multiworld.get_location("Runway - Destroy Missile Battery (Secret Agent)", player),
                  lambda state: (
                      state.has('Runway', player) and
-                     state.has('Tank (Runway)', player) and
-                     has_explosive(state, player)
+                     can_bomb_runway(state, player)
                  ))
     if "Runway - Double Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Runway - Double Agent (Clear)"):
         add_rule(world.multiworld.get_location("Runway - Double Agent (Clear)", player),
                  lambda state: (
                      state.has('Runway', player) and
                      state.has('Ignition Key (Runway)', player) and
-                     state.has('Tank (Runway)', player) and
-                     has_explosive(state, player)
+                     can_bomb_runway(state, player)
                  ))
     if "Runway - Escape In Plane" in world.location_name_to_id and is_valid_location(world, "Runway - Escape In Plane"):
         add_rule(world.multiworld.get_location("Runway - Escape In Plane", player),
@@ -3486,8 +3486,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Runway', player) and
                      state.has('Ignition Key (Runway)', player) and
-                     state.has('Tank (Runway)', player) and
-                     has_explosive(state, player)
+                     can_bomb_runway(state, player)
                  ))
     if "Silo - (Clear)" in world.location_name_to_id and is_valid_location(world, "Silo - (Clear)"):
         add_rule(world.multiworld.get_location("Silo - (Clear)", player),
@@ -4513,15 +4512,13 @@ def set_rules(world: "GoldeneyeWorld") -> None:
         add_rule(world.multiworld.get_location("Surface 2 - (Clear)", player),
                  lambda state: (
                      state.has('Surface 2', player) and
-                     state.has('Hut Door Key (Surface 1)', player) and
-                     has_gun(state, player)
+                     state.has('Hut Door Key (Surface 1)', player)
                  ))
     if "Surface 2 - Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Surface 2 - Agent (Clear)"):
         add_rule(world.multiworld.get_location("Surface 2 - Agent (Clear)", player),
                  lambda state: (
                      state.has('Surface 2', player) and
-                     state.has('Hut Door Key (Surface 1)', player) and
-                     has_gun(state, player)
+                     state.has('Hut Door Key (Surface 1)', player)
                  ))
     if "Surface 2 - Body Armor (Cabin With Camera)" in world.location_name_to_id and is_valid_location(world, "Surface 2 - Body Armor (Cabin With Camera)"):
         add_rule(world.multiworld.get_location("Surface 2 - Body Armor (Cabin With Camera)", player),
@@ -4540,35 +4537,35 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                  lambda state: (
                      state.has('Surface 2', player) and
                      state.has('Hut Door Key (Surface 1)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Surface 2 - Break Communications Link To Bunker (Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 2 - Break Communications Link To Bunker (Agent)"):
         add_rule(world.multiworld.get_location("Surface 2 - Break Communications Link To Bunker (Agent)", player),
                  lambda state: (
                      state.has('Surface 2', player) and
                      state.has('Hut Door Key (Surface 1)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Surface 2 - Break Communications Link To Bunker (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 2 - Break Communications Link To Bunker (Double Agent)"):
         add_rule(world.multiworld.get_location("Surface 2 - Break Communications Link To Bunker (Double Agent)", player),
                  lambda state: (
                      state.has('Surface 2', player) and
-                     state.has('Hut Door Key (Surface 1)', player) and
-                     has_gun(state, player)
+                     state.has('Hut Door Key (Surface 1)', player)
                  ))
     if "Surface 2 - Break Communications Link To Bunker (Secret Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 2 - Break Communications Link To Bunker (Secret Agent)"):
         add_rule(world.multiworld.get_location("Surface 2 - Break Communications Link To Bunker (Secret Agent)", player),
                  lambda state: (
                      state.has('Surface 2', player) and
                      state.has('Hut Door Key (Surface 1)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Surface 2 - Cheat - Tiny Bond" in world.location_name_to_id and is_valid_location(world, "Surface 2 - Cheat - Tiny Bond"):
         add_rule(world.multiworld.get_location("Surface 2 - Cheat - Tiny Bond", player),
                  lambda state: (
                      state.has('Surface 2', player) and
                      state.has('Special Timed Mine', player) and
-                     state.has('Hut Door Key (Surface 1)', player)
+                     state.has('Hut Door Key (Surface 1)', player) and
+                     has_gun_or_explosive(state, player)
                  ))
     if "Surface 2 - Comms Room Key" in world.location_name_to_id and is_valid_location(world, "Surface 2 - Comms Room Key"):
         add_rule(world.multiworld.get_location("Surface 2 - Comms Room Key", player),
@@ -4604,18 +4601,21 @@ def set_rules(world: "GoldeneyeWorld") -> None:
         add_rule(world.multiworld.get_location("Surface 2 - Disrupt All Surveillance Equipment", player),
                  lambda state: (
                      state.has('Surface 2', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Surface 2 - Disrupt All Surveillance Equipment (Double Agent)" in world.location_name_to_id and is_valid_location(world, "Surface 2 - Disrupt All Surveillance Equipment (Double Agent)"):
         add_rule(world.multiworld.get_location("Surface 2 - Disrupt All Surveillance Equipment (Double Agent)", player),
-                 lambda state: state.has('Surface 2', player))
+                 lambda state: (
+                     state.has('Surface 2', player) and
+                     has_gun_or_explosive(state, player)
+                 ))
     if "Surface 2 - Double Agent (Clear)" in world.location_name_to_id and is_valid_location(world, "Surface 2 - Double Agent (Clear)"):
         add_rule(world.multiworld.get_location("Surface 2 - Double Agent (Clear)", player),
                  lambda state: (
                      state.has('Surface 2', player) and
                      state.has('Special Timed Mine', player) and
                      state.has('Hut Door Key (Surface 1)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Surface 2 - Gain Entry To Bunker" in world.location_name_to_id and is_valid_location(world, "Surface 2 - Gain Entry To Bunker"):
         add_rule(world.multiworld.get_location("Surface 2 - Gain Entry To Bunker", player),
@@ -4635,7 +4635,7 @@ def set_rules(world: "GoldeneyeWorld") -> None:
                      state.has('Surface 2', player) and
                      state.has('Special Timed Mine', player) and
                      state.has('Hut Door Key (Surface 1)', player) and
-                     has_gun(state, player)
+                     has_gun_or_explosive(state, player)
                  ))
     if "Train - (Clear)" in world.location_name_to_id and is_valid_location(world, "Train - (Clear)"):
         add_rule(world.multiworld.get_location("Train - (Clear)", player),

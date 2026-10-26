@@ -4,6 +4,15 @@ I wanted to play GoldenEye in Archipelago and no one else did it so here we are.
 
 Also yes hi, despite the username, yes I am the music guy (FamilyJules was taken). I decided music wasn't frusturating enough so I decided to make like a millenial and "learn to code". I'm still baby so please be gentle.
 
+# Quick Install Instructions
+
+1. Install Newest Archipelago, Bizhawk versions and the newest goldeneye.apworld from this page's releases. (Recommended: Also the newest Poptracker and Poptracker build by Vincent'sSin)
+2. Close any Archipelago windows, double click goldeneye.apworld to install it. Reopen Archipelago Launcher and create and export options from Options Creator.
+3. Send yaml to game host, or host your own game. Open the .apge file in ArchipelagoLauncher.exe and set your Emuhawk.exe path and ROM paths.
+4. Bizhawk, Client, and Lua should automatically load and connect and you're ready to play. Enjoy!
+
+Full install instructions at docs/setup_en.md
+
 # WHAT Is Random?
 
 - Mission Unlocks.
@@ -78,7 +87,7 @@ Again, the map select screen will show which items you have unlocked for loadout
 
 # Special Thanks
 
-Vincent'sSin for compiling every item in the game and logic for them and then for letting me use it for this AP. It's going to be invaluable for moving forward with the checks in the future.
+Vincent'sSin for compiling every item in the game and logic for them and then for letting me use it for this AP as well as creating the poptracker!
 
 kholdfuzion for his intense and extensive research for the Goldeneye Decomp project and for sharing. This would not be possible without his findings and documentation of hex addresses.
 
