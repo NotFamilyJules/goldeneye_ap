@@ -4,6 +4,8 @@ I wanted to play GoldenEye in Archipelago and no one else did it so here we are.
 
 Also yes hi, despite the username, yes I am the music guy (FamilyJules was taken). I decided music wasn't frusturating enough so I decided to make like a millenial and "learn to code". I'm still baby so please be gentle.
 
+[v0.2 Release Trailer with Video Setup](https://youtu.be/sY99KyXEgXQ)
+
 # Quick Install Instructions
 
 1. Install Newest Archipelago, Bizhawk versions and the newest goldeneye.apworld from this page's releases. (Recommended: Also the newest Poptracker and Poptracker build by Vincent'sSin)
@@ -11,7 +13,7 @@ Also yes hi, despite the username, yes I am the music guy (FamilyJules was taken
 3. Send yaml to game host, or host your own game. Open the .apge file in ArchipelagoLauncher.exe and set your Emuhawk.exe path and ROM paths.
 4. Bizhawk, Client, and Lua should automatically load and connect and you're ready to play. Enjoy!
 
-Full install instructions at docs/setup_en.md
+Full install instructions at [docs/setup_en.md](https://github.com/NotFamilyJules/goldeneye_ap/blob/main/docs/setup_en.md)
 
 # WHAT Is Random?
 
@@ -45,7 +47,7 @@ Mission clears works the same, either one check per level no matter the difficul
 
 Item Shuffler is on by default which includes Freestanding Items, NPC Drops, and NPC Handoff. Items are level specific so they will unlock for you when you enter the level they're used in. In many cases, getting the item is an objective so you'll get the objective completed immediately at level start if that's the case. 
 
-Since there's a lot of key items to keep track of, I've made a bare bones tracker of the level objects you own on the map select screen so you can see what you can do. VincentSin is working on a more in depth PopTracker so keep an eye out on the Goldneye Archipelago Discord Channel in #future-game-design. I'll have the latest PopTracker pinned when available.
+Since there's a lot of key items to keep track of, I've made a bare bones tracker of the level objects you own on the map select screen so you can see what you can do. Vincent'sSin is creating the Poptracker for this AP which the v0.2 release is bundled with but you can get the up to date version at the [Goldeneye AP Poptracker Repo](https://github.com/VincentsSin/Goldeneye007-AP-Tracker)
 
 Body Armor and Ammo Crate shuffler is off by default but it was really hard to implement so please at least try it. Remember that body armor does not appear in every difficulty, but all the body armor available to a level is available in Agent difficulty. It incentivizes not always going in 00 Agent for the objectives.
 
