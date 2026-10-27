@@ -105,7 +105,7 @@ PixelShake92 for helping me find addresses and sharing his extensive wisdom with
 # Included in the release:
 - the Archipelago world implementation
 - A fully automated start up .apge to get playing immediately
-- player setup documentation in `docs/setup_en.md`
+- player setup documentation in [docs/setup_en.md](https://github.com/NotFamilyJules/goldeneye_ap/blob/main/docs/setup_en.md)
 
 Disclaimer: As I am a budding young bushy eyed developer, AI was partially used to create this APWorld. I despise AI, but in the process of learning how to make apworlds, I've mostly used it as a guardrail professor to slap me with a ruler anytime I do anything wrong and explain to me why I'm dumb and should give up. The ultimate goal for me is to rewrite the code when it's working completely from scratch to make sure no AI was used in the full release of this apworld. I don't condone using AI to make apworlds, mostly because of it's effects on the world, but also because it's really stupid and most of the time can't do anything right unless you already know what you're doing anyway and can do it without.
 
