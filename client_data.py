@@ -3143,7 +3143,7 @@ MISSIONS = [
         "shared_freestanding_pickup_checks": [
             {
                 "location_id": 70705001,
-                "location_name": 'Frigate - Body Armor (Invisable on Crate in Cargo Hold)',
+                "location_name": 'Frigate - Body Armor (Invisible on Crate in Cargo Hold)',
                 "descriptor": 208873290,
                 "kind": 4,
                 "setup_cmd": 131,
@@ -3172,7 +3172,7 @@ MISSIONS = [
             1: [
                 {
                     "location_id": 70715001,
-                    "location_name": 'Frigate - Body Armor (Invisable on Crate in Cargo Hold) (Agent)',
+                    "location_name": 'Frigate - Body Armor (Invisible on Crate in Cargo Hold) (Agent)',
                     "descriptor": 208873290,
                     "kind": 4,
                     "setup_cmd": 131,

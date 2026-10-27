@@ -192,9 +192,8 @@ class RandomizeEnemyLoadouts(Toggle):
 class SfxRandomization(Choice):
     """
     Weapons Only shuffles attacks, slappers, throws, reloads, clicks and switches. Categories
-    combines attacks, explosions and impacts; ricochets/flybys and casings each stay separate.
-    Equip, reload and click sounds join electronics/interface. True Random shuffles all sound
-    effects. Continuous sounds retain their stop behavior. Off keeps native sounds.
+    combines attacks, explosions and impacts; ricochets/flybys and casings each stay separate. 
+    True Random shuffles all sound effects. Off is vanilla sfx.
     """
     display_name = "SFX Randomization"
     option_weapons_only = 1
