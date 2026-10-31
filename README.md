@@ -15,6 +15,20 @@ Also yes hi, despite the username, yes I am the music guy (FamilyJules was taken
 
 Full install instructions at [docs/setup_en.md](https://github.com/NotFamilyJules/goldeneye_ap/blob/main/docs/setup_en.md)
 
+# Play with 1964GEPD
+
+Using 1964 Emulator offers Mouse Aim support as well as far better loading times. Follow instructions below to play Goldeneye AP with that instead of Bizhawk.
+
+1. Install 1964 through Graslu's GE/PD Release here: [Install 1964](https://github.com/Graslu/1964GEPD/releases)
+2. Download and extract the 1964ge_ap.zip in [Releases](https://github.com/NotFamilyJules/goldeneye_ap/releases/tag/v0%2C2).
+3. Generate the .apge room patch as normal, setup listed in Quick Start above.
+4. Drag your .apge file on top of 1964GE_AP.cmd (not the .py file) inside the extracted 1964ge_ap folder.
+5. Read the top title bar and find your 1964.exe and then your legally acquired **VANILLA** Goldeneye ROM.
+6. 1964 will automatically open with the AP Patched ROM, alongside a LUA console that will show AP Client Messages
+7. Enjoy!
+
+Note: Because of 1964's increased frame rate, naturally enemies have worse accuracy. The 1964 patch created by this will increase guard accuracy to match original hardware. I mean come on, you've already got mouse aiming... 
+
 # WHAT Is Random?
 
 - Mission Unlocks.
