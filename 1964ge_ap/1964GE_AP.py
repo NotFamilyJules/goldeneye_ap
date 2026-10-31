@@ -14,6 +14,10 @@ sys.executable = str(archipelago / 'ArchipelagoLauncher.exe')
 import __startup__
 __startup__.init()
 
+# AP's client and game code use the legacy socket .open and .closed properties.
+import websockets.legacy.client
+websockets.connect = websockets.legacy.client.connect
+
 # Path Client to Windows AppData
 os.chdir(STATE)
 os.environ['TCL_LIBRARY'] = str(archipelago / 'share/tcl8.6')
