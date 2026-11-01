@@ -507,11 +507,12 @@ def launch(*launch_args):
     async def main():
         memory = Memory(emulator.pid,rom)
         ctx = Context1964(server,args.password,memory)
+        ctx.server_address = ctx.suggested_address
         ctx.server_task = asyncio.create_task(server_loop(ctx),name='ServerLoop')
         if not os.environ.get("GOLDENEYE_DESKTOP"):
             ctx.run_cli()
         tracker = Tracker(emulator.pid)
-        window = None if args.nogui else ClientWindow(tracker.root, ctx, server)
+        window = None if args.nogui else ClientWindow(tracker.root, ctx, ctx.server_address)
         try:
             await watch(ctx, emulator, tracker, window)
         finally:
