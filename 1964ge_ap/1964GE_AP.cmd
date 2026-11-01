@@ -67,8 +67,8 @@ $configuration | Add-Member -NotePropertyName archipelago -NotePropertyValue $ar
 $runtimeDirectory = $configuration.archipelago
 $env:PYTHONHOME = $runtimeDirectory
 $env:PYTHONPATH = "$runtimeDirectory\lib;$runtimeDirectory\lib\library.zip"
-$pythonDll = (Get-ChildItem $runtimeDirectory -Filter 'python3*.dll' |
-              Where-Object Name -ne 'python3.dll' | Select-Object -First 1).FullName
+$pythonDll = Join-Path $runtimeDirectory 'python313.dll'
+
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
