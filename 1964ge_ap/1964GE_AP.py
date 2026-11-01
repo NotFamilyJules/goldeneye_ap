@@ -489,9 +489,9 @@ def launch(*launch_args):
     rom = STATE / 'play.z64'
     patch.patch(str(rom))
     rom_data = bytearray(patch_for_1964(rom.read_bytes(), NATIVE_PATCH))
-    # Double guard hit accumulation, then update the ROM checksum.
-    rom_data[0x6200C:0x62010] = bytes.fromhex('46021080')
-    rom_data[0x10:0x18] = bytes.fromhex('e3b6fadf26fb8ab2')
+    # 1964 makes guards accuracy shit so multiply accuracy to match frame rate increase.
+    rom_data[0x62004:0x62010] = bytes.fromhex('460211004500000746041080') # x3 to match 60fps vs 20fps
+    rom_data[0x10:0x18] = bytes.fromhex('6fb6fadf1ed0fbde') # checksum update for the above change
     rom.write_bytes(rom_data)
     executable = Path(config['emulator'])
     # 1964's -g option reads this saved folder; -r changes its ROM list.
