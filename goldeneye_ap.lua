@@ -505,7 +505,8 @@ local function bind_preplaced_freestanding_objects()
                 and (weapon_number < 33 or weapon_number == ITEM_TOKEN)
                 and (read_u32(obj_ptr + OBJ_OFF_FLAGS) & 0x4000) ~= 0
             for _, target in ipairs(freestanding_targets) do
-                if not target.bound and model == target.model and pad == target.pad
+                if not target.bound and pad == target.pad
+                    and (target.npc_weapon or model == target.model)
                     and guard_gun == target.npc_weapon then
                     target.objects[#target.objects + 1] = {obj=obj_ptr, prop=prop_ptr, was_live=false, collected=false}
                 end

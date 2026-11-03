@@ -161,6 +161,15 @@ class GoldeneyeWorld(World):
 
     def create_items(self) -> None:
         self.multiworld.itempool.extend(create_itempool(self))
+    
+    # This is a special override to allow starting items to be collected even if they are normally classified as useful. 
+    def collect_item(self, state: CollectionState, item: Item,
+                     remove: bool = False) -> str | None:
+        # 1. Track YAML starting items even when they are classified as useful.
+        if item.name in self.options.start_inventory.value:
+            return item.name
+        # 2. Keep normal collection rules for everything else.
+        return super().collect_item(state, item, remove)
 
     def create_item(self, name: str) -> Item:
         return create_item(self, name)
